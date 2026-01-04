@@ -101,5 +101,8 @@ def propose_for_route(route_id: int, db: Session = Depends(get_db)):
     DEBUG / MVP:
     Zwraca ID paczek w buforze trasy
     """
-    ids = propose_matches_for_route(route_id=route_id, db=db)
-    return {"route_id": route_id, "parcel_ids": ids}
+    proposals = propose_matches_for_route(route_id=route_id, db=db)
+    return {
+        "route_id": route_id,
+        "proposals": proposals,
+    }
