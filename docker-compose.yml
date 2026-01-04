@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgis/postgis:15-3.4
+    container_name: routes-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      #- pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    ports:
+      - "5432:5432"
+
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: osrm
+    volumes:
+      - ./osrm:/data
+    command: >
+      osrm-routed --algorithm ch /data/poland-latest.osrm
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/5000"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    container_name: api
+    depends_on:
+      db:
+        condition: service_started
+      osrm:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      OSRM_URL: http://osrm:5000
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:

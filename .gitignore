@@ -1,0 +1,23 @@
+# --- OSRM data (VERY LARGE, GENERATED) ---
+osrm/
+*.osm.pbf
+*.osrm*
+*.lua
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# --- Docker ---
+*.log
+
+# --- IDE ---
+.vscode/
+.idea/
+
+# --- OS / misc ---
+.DS_Store
+Thumbs.db
