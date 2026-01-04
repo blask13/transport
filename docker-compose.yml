@@ -32,6 +32,14 @@ services:
       timeout: 5s
       retries: 10
 
+  frontend:
+    image: nginx:alpine
+    container_name: routes-frontend
+    ports:
+      - "8080:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+
   api:
     build: ./backend
     container_name: api

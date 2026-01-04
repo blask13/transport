@@ -28,3 +28,4 @@ async def route_test():
 
 # PODŁĄCZENIE ROUTERA
 app.include_router(routes_router)
+

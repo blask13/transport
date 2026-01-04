@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.sql import func
 from geoalchemy2 import Geometry
+from sqlalchemy import Identity
 
 class Base(DeclarativeBase):
     pass
@@ -81,7 +82,11 @@ class Parcel(Base):
 class RouteParcelMatch(Base):
     __tablename__ = "route_parcel_matches"
 
-    id = Column(BigInteger, primary_key=True)
+    id = Column(
+        BigInteger,
+        Identity(start=1, increment=1),
+        primary_key=True,
+    )
 
     route_id = Column(
         BigInteger,
@@ -115,8 +120,6 @@ class RouteParcelMatch(Base):
     drop_to_route_m = Column(Float, nullable=True)
 
     # debug / wyjaśnienia algorytmu
-    debug = Column(Text, nullable=True)
-
     algorithm_version = Column(Text, nullable=False, server_default="mvp-0.1")
 
     debug = Column(Text, nullable=True)
