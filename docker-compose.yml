@@ -30,6 +30,8 @@ services:
   api:
     build: ./backend
     container_name: api
+    volumes:
+      - ./backend:/app    
     depends_on:
       db:
         condition: service_started

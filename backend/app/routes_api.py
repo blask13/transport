@@ -1,3 +1,4 @@
+# backend\app\routes_api.py
 from __future__ import annotations
 
 import os
@@ -91,3 +92,14 @@ def list_routes(db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+from .matching import propose_matches_for_route
+
+
+@router.post("/{route_id}/propose")
+def propose_for_route(route_id: int, db: Session = Depends(get_db)):
+    """
+    DEBUG / MVP:
+    Zwraca ID paczek w buforze trasy
+    """
+    ids = propose_matches_for_route(route_id=route_id, db=db)
+    return {"route_id": route_id, "parcel_ids": ids}

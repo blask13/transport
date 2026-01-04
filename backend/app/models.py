@@ -1,3 +1,4 @@
+# backend\app\models.py
 from __future__ import annotations
 from sqlalchemy.orm import DeclarativeBase
 
@@ -53,8 +54,20 @@ class Parcel(Base):
 
     id = Column(BigInteger, primary_key=True)
     sender_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
+
+    title = Column(Text, nullable=True)
+
     pickup_point = Column(Geometry("POINT", srid=4326), nullable=False)
     drop_point = Column(Geometry("POINT", srid=4326), nullable=False)
+
+    pickup_after = Column(DateTime(timezone=True), nullable=True)
+    pickup_before = Column(DateTime(timezone=True), nullable=True)
+    dropoff_after = Column(DateTime(timezone=True), nullable=True)
+    dropoff_before = Column(DateTime(timezone=True), nullable=True)
+
+    weight_kg = Column(Float, nullable=True)
+    size_class = Column(Text, nullable=True)
+
     status = Column(Text, nullable=False, server_default="pending")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -63,5 +76,49 @@ class Parcel(Base):
         CheckConstraint(
             "status IN ('pending','offered','accepted','rejected','cancelled')",
             name="chk_parcels_status",
+        ),
+    )
+class RouteParcelMatch(Base):
+    __tablename__ = "route_parcel_matches"
+
+    id = Column(BigInteger, primary_key=True)
+
+    route_id = Column(
+        BigInteger,
+        ForeignKey("routes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    parcel_id = Column(
+        BigInteger,
+        ForeignKey("parcels.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    status = Column(
+        Text,
+        nullable=False,
+        server_default="proposed",
+    )
+
+    # Δ względem trasy bazowej
+    delta_distance_m = Column(Float, nullable=False)
+    delta_duration_s = Column(Float, nullable=False)
+
+    # opcjonalnie: snapshoty
+    base_distance_m = Column(Float, nullable=True)
+    base_duration_s = Column(Float, nullable=True)
+    new_distance_m = Column(Float, nullable=True)
+    new_duration_s = Column(Float, nullable=True)
+
+    algorithm_version = Column(Text, nullable=False, server_default="mvp-0.1")
+
+    debug = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('proposed','accepted','rejected','expired')",
+            name="chk_route_parcel_match_status",
         ),
     )
