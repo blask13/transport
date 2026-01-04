@@ -6,7 +6,7 @@ from sqlalchemy import text
 from .osrm import osrm_route
 from .models import RouteParcelMatch, Parcel
 from .models import Route
-
+import json
 
 def propose_matches_for_route(
     route_id: int,
@@ -49,7 +49,15 @@ def propose_matches_for_route(
     sql = text(
         """
         SELECT
-            p.id AS parcel_id
+            p.id AS parcel_id,
+            ST_Distance(
+                p.pickup_point::geography,
+                r.geom::geography
+            ) AS pickup_to_route_m,
+            ST_Distance(
+                p.drop_point::geography,
+                r.geom::geography
+            ) AS drop_to_route_m
         FROM parcels p
         JOIN routes r ON r.id = :route_id
         WHERE
@@ -121,6 +129,17 @@ def propose_matches_for_route(
             parcel_id=parcel.id,
             delta_distance_m=delta_distance,
             delta_duration_s=delta_duration,
+            base_distance_m=base["distance_m"],
+            base_duration_s=base["duration_s"],
+            new_distance_m=variant["distance_m"],
+            new_duration_s=variant["duration_s"],
+            pickup_to_route_m=r.pickup_to_route_m,
+            drop_to_route_m=r.drop_to_route_m,
+            debug=json.dumps({
+                "buffer_m": buffer_m,
+                "base": base,
+                "variant": variant,
+            }),
             status="proposed",
         )
 

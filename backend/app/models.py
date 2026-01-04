@@ -110,6 +110,13 @@ class RouteParcelMatch(Base):
     new_distance_m = Column(Float, nullable=True)
     new_duration_s = Column(Float, nullable=True)
 
+    # diagnostyka geometryczna (metry)
+    pickup_to_route_m = Column(Float, nullable=True)
+    drop_to_route_m = Column(Float, nullable=True)
+
+    # debug / wyjaśnienia algorytmu
+    debug = Column(Text, nullable=True)
+
     algorithm_version = Column(Text, nullable=False, server_default="mvp-0.1")
 
     debug = Column(Text, nullable=True)
