@@ -63,8 +63,18 @@ def propose_matches_for_route(
         FROM parcels p
         JOIN routes r ON r.id = :route_id
         WHERE
-            p.status = 'pending'
-            AND ST_DWithin(
+            -- paczka ma być widoczna dla wielu kurierów aż do ACCEPT albo CANCEL
+            -- więc proponujemy zarówno pending jak i offered (jeśli już masz takie w DB)
+            p.status = ANY(ARRAY['pending'::text, 'offered'::text])
+            AND NOT EXISTS (
+                SELECT 1
+                FROM route_parcel_matches m
+                WHERE m.route_id = :route_id
+                  AND m.parcel_id = p.id
+                  -- nie dubluj aktywnych propozycji dla tej samej trasy
+                  AND m.status IN ('proposed', 'accepted')
+            )
+            AND ST_DWithin(            
                 p.pickup_point::geography,
                 r.geom::geography,
                 :buffer_m
@@ -99,6 +109,8 @@ def propose_matches_for_route(
 
     for r in rows:
         parcel = db.get(Parcel, r.parcel_id)
+        if not parcel:
+            continue
 
         # pickup/drop też mogą być WKBElement -> bierzemy współrzędne przez SQL
         pcoords_sql = text(
@@ -274,12 +286,9 @@ def accept_match(match_id: int, db: Session):
             RouteParcelMatch.id != match.id,
         ).update({"status": "rejected"}, synchronize_session=False)
 
-        # --- 9) Unieważnij inne propozycje tej trasy (expired) ---
-        db.query(RouteParcelMatch).filter(
-            RouteParcelMatch.route_id == route.id,
-            RouteParcelMatch.id != match.id,
-            RouteParcelMatch.status == "proposed",
-        ).update({"status": "expired"}, synchronize_session=False)
+        # --- 9) NIE kasuj innych propozycji tej trasy ---
+        # W MVP trasa może mieć wiele proponowanych paczek równolegle.
+        # Kasujemy tylko te propozycje, które dotyczą tej paczki (pkt 8).
 
         return {
             "route_id": int(route.id),

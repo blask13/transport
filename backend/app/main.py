@@ -1,11 +1,21 @@
 # backend\app\main.py
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import os
 
 from .routes_api import router as routes_router
+from .parcels_api import router as parcels_router
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 OSRM_URL = os.getenv("OSRM_URL", "http://osrm:5000")
 
@@ -28,4 +38,5 @@ async def route_test():
 
 # PODŁĄCZENIE ROUTERA
 app.include_router(routes_router)
+app.include_router(parcels_router)
 

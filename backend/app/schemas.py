@@ -12,8 +12,7 @@ class LngLat(BaseModel):
 class RouteCreate(BaseModel):
     courier_id: int
     title: str | None = None
-    start: LngLat
-    end: LngLat
+    points: List[LngLat]
 
 
 class RouteOut(BaseModel):

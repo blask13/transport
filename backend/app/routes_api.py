@@ -5,6 +5,7 @@ import os
 import httpx
 import json
 from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from sqlalchemy import func
@@ -43,7 +44,12 @@ async def create_route(payload: RouteCreate, db: Session = Depends(get_db)):
     - zapisuje LINESTRING do PostGIS
     """
 
-    coords = f"{payload.start.lng},{payload.start.lat};{payload.end.lng},{payload.end.lat}"
+    if len(payload.points) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 points required")
+
+    coords = ";".join(
+        f"{p.lng},{p.lat}" for p in payload.points
+    )
     url = f"{OSRM_URL}/route/v1/driving/{coords}?overview=full&geometries=geojson"
 
     async with httpx.AsyncClient(
@@ -66,8 +72,8 @@ async def create_route(payload: RouteCreate, db: Session = Depends(get_db)):
     db_obj = Route(
         courier_id=payload.courier_id,
         title=payload.title,
-        start_point=point_wkt(payload.start.lng, payload.start.lat),
-        end_point=point_wkt(payload.end.lng, payload.end.lat),
+        start_point=point_wkt(payload.points[0].lng, payload.points[0].lat),
+        end_point=point_wkt(payload.points[-1].lng, payload.points[-1].lat),
         geom=linestring_wkt([(lng, lat) for lng, lat in coords_list]),
         distance_m=float(route0["distance"]),
         duration_s=float(route0["duration"]),
@@ -87,18 +93,27 @@ async def create_route(payload: RouteCreate, db: Session = Depends(get_db)):
 
 
 @router.get("")
-def list_routes(db: Session = Depends(get_db)):
+def list_routes(
+    courier_id: Optional[int] = None,
+    active_only: int = 1,
+    db: Session = Depends(get_db),
+):
     """
     Prosta lista tras – debug / test
     """
-    rows = db.execute(
-        select(
-            Route.id,
-            Route.courier_id,
-            Route.distance_m,
-            Route.duration_s,
-        )
-    ).all()
+    q = select(
+        Route.id,
+        Route.courier_id,
+        Route.distance_m,
+        Route.duration_s,
+        Route.is_active,
+    )
+    if courier_id is not None:
+        q = q.where(Route.courier_id == courier_id)
+    if active_only:
+        q = q.where(Route.is_active.is_(True))
+
+    rows = db.execute(q).all()
 
     return [
         {
@@ -106,6 +121,7 @@ def list_routes(db: Session = Depends(get_db)):
             "courier_id": r.courier_id,
             "distance_m": r.distance_m,
             "duration_s": r.duration_s,
+            "is_active": r.is_active,
         }
         for r in rows
     ]
@@ -250,3 +266,23 @@ def accept_route_match(match_id: int, db: Session = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+
+@router.delete("/{route_id}")
+def cancel_route(route_id: int, db: Session = Depends(get_db)):
+    route = db.get(Route, route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+    route.is_active = False
+
+    # Odrzuć wiszące propozycje tej trasy
+    db.query(RouteParcelMatch).filter(
+        RouteParcelMatch.route_id == route.id,
+        RouteParcelMatch.status == "proposed",
+    ).update(
+        {"status": "expired"},
+        synchronize_session=False,
+    )
+
+    db.commit()
+    return {"status": "cancelled"}
