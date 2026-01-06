@@ -7,11 +7,10 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import select
-from sqlalchemy import func
+from sqlalchemy import select, desc, text, func
 from .history import RouteHistory
-from sqlalchemy import desc
-
+from .waypoint_optimizer import optimize_waypoints_greedy_forward
+from .osrm import osrm_route
 from .db import get_db
 from .models import Route, Parcel, RouteParcelMatch
 from .schemas import (
@@ -378,4 +377,157 @@ def get_route_history(
             }
             for r in rows
         ]
+    }        
+
+
+# Zamień endpoint w backend/app/routes_api.py
+
+@router.get("/{route_id}/segments")
+def get_route_segments(route_id: int, db: Session = Depends(get_db)):
+    """
+    Zwraca segmenty trasy w ZOPTYMALIZOWANEJ kolejności przejazdu.
+    """
+    route = db.get(Route, route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+    
+    # Pobierz współrzędne start/end
+    route_coords = db.execute(
+        text("""
+            SELECT
+              ST_X(start_point) AS start_lng, ST_Y(start_point) AS start_lat,
+              ST_X(end_point) AS end_lng, ST_Y(end_point) AS end_lat
+            FROM routes WHERE id = :route_id
+        """),
+        {"route_id": route_id}
+    ).mappings().first()
+    
+    if not route_coords:
+        raise HTTPException(status_code=404, detail="Route coords not found")
+    
+    # Pobierz zaakceptowane paczki
+    accepted_matches = db.execute(
+        select(RouteParcelMatch)
+        .where(RouteParcelMatch.route_id == route_id)
+        .where(RouteParcelMatch.status == "accepted")
+        .order_by(RouteParcelMatch.id)  # Kolejność akceptacji
+    ).scalars().all()
+    
+    # Przygotuj dane paczek dla optymalizatora
+    parcels_data = []
+    parcels_map = {}  # parcel_id -> coords
+    
+    for match in accepted_matches:
+        pcoords = db.execute(
+            text("""
+                SELECT
+                  ST_X(pickup_point) AS pickup_lng, ST_Y(pickup_point) AS pickup_lat,
+                  ST_X(drop_point) AS drop_lng, ST_Y(drop_point) AS drop_lat
+                FROM parcels WHERE id = :pid
+            """),
+            {"pid": match.parcel_id}
+        ).mappings().first()
+        
+        if pcoords:
+            parcels_data.append({
+                "id": match.parcel_id,
+                "pickup": (pcoords["pickup_lng"], pcoords["pickup_lat"]),
+                "drop": (pcoords["drop_lng"], pcoords["drop_lat"]),
+            })
+            parcels_map[match.parcel_id] = pcoords
+    
+    start = (route_coords["start_lng"], route_coords["start_lat"])
+    end = (route_coords["end_lng"], route_coords["end_lat"])
+    
+    # OPTYMALIZACJA: Uzyskaj kolejność waypoints według trasy
+    optimized_coords = optimize_waypoints_greedy_forward(start, end, parcels_data)
+    
+    # BUDUJ WAYPOINTS W ZOPTYMALIZOWANEJ KOLEJNOŚCI
+    waypoints = []
+    waypoints.append({
+        "type": "start",
+        "coords": list(start),
+        "label": "START",
+    })
+    
+    # Mapuj zoptymalizowane współrzędne z powrotem do paczek
+    # (pomijamy start i end)
+    for i in range(1, len(optimized_coords) - 1):
+        coord = optimized_coords[i]
+        
+        # Znajdź która paczka i czy to pickup czy drop
+        found = False
+        for parcel in parcels_data:
+            # Sprawdź pickup
+            if abs(coord[0] - parcel["pickup"][0]) < 0.0001 and \
+               abs(coord[1] - parcel["pickup"][1]) < 0.0001:
+                waypoints.append({
+                    "type": "pickup",
+                    "parcel_id": parcel["id"],
+                    "coords": list(coord),
+                    "label": f"PICKUP - Paczka #{parcel['id']}",
+                })
+                found = True
+                break
+            
+            # Sprawdź drop
+            if abs(coord[0] - parcel["drop"][0]) < 0.0001 and \
+               abs(coord[1] - parcel["drop"][1]) < 0.0001:
+                waypoints.append({
+                    "type": "drop",
+                    "parcel_id": parcel["id"],
+                    "coords": list(coord),
+                    "label": f"DROP - Paczka #{parcel['id']}",
+                })
+                found = True
+                break
+        
+        if not found:
+            # Fallback: unknown waypoint
+            waypoints.append({
+                "type": "waypoint",
+                "coords": list(coord),
+                "label": f"Punkt {i}",
+            })
+    
+    waypoints.append({
+        "type": "end",
+        "coords": list(end),
+        "label": "END",
+    })
+    
+    # SEGMENTY Z OSRM (między kolejnymi waypoints)
+    segments = []
+    for i in range(len(optimized_coords) - 1):
+        from_coord = optimized_coords[i]
+        to_coord = optimized_coords[i + 1]
+        
+        try:
+            segment_route = osrm_route([from_coord, to_coord], with_geometry=True)
+            segments.append({
+                "from_index": i,
+                "to_index": i + 1,
+                "geometry": segment_route.get("geometry"),
+                "distance_m": segment_route.get("distance_m"),
+                "duration_s": segment_route.get("duration_s"),
+            })
+        except Exception as e:
+            # Fallback: prosta linia
+            segments.append({
+                "from_index": i,
+                "to_index": i + 1,
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[from_coord[0], from_coord[1]], [to_coord[0], to_coord[1]]]
+                },
+                "distance_m": 0,
+                "duration_s": 0,
+                "error": str(e),
+            })
+    
+    return {
+        "route_id": route_id,
+        "waypoints": waypoints,
+        "segments": segments,
+        "optimizer": "greedy_forward",
     }

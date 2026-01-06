@@ -27,49 +27,16 @@
       overflow: hidden;
     }
     
-    /* ZMIANA: Container z resizable */
-    #container {
-      display: flex;
-      flex-direction: column;
-      height: 100vh;
-      position: relative;
-    }
-    
-    /* ZMIANA: Mapa z dynamiczną wysokością */
+    /* ZMIANA: Mapa 50% wysokości */
     #map { 
       height: 50vh;
-      flex-shrink: 0;
       border-bottom: 3px solid #2196F3;
+      flex-shrink: 0;
     }
     
-    /* NOWE: Separator do przesuwania */
-    #separator {
-      height: 6px;
-      background: #2196F3;
-      cursor: row-resize;
-      position: relative;
-      z-index: 1000;
-      transition: background 0.2s;
-    }
-    
-    #separator:hover {
-      background: #1976D2;
-    }
-    
-    #separator::after {
-      content: '⋮';
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      transform: translate(-50%, -50%);
-      color: white;
-      font-size: 12px;
-      letter-spacing: 2px;
-    }
-    
-    /* ZMIANA: Panel z dynamiczną wysokością */
+    /* ZMIANA: Panel 50% z dwoma kolumnami */
     #panel {
-      flex: 1;
+      height: 50vh;
       overflow: hidden;
       display: flex;
       gap: 10px;
@@ -88,7 +55,7 @@
       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
     
-    /* Prawa kolumna - wyniki */
+    /* Prawa kolumna - wyniki (propozycje, paczki) */
     #results {
       flex-grow: 1;
       background: white;
@@ -314,109 +281,63 @@
       #map {
         height: 40vh;
       }
+      
+      #panel {
+        height: 60vh;
+      }
     }
   </style>
 </head>
 <body>
 
-<div id="container">
-  <div id="map"></div>
-  
-  <!-- NOWY: Separator do przesuwania -->
-  <div id="separator"></div>
+<div id="map"></div>
 
-  <div id="panel">
-    <!-- Lewa kolumna - sterowanie -->
-    <div id="controls">
-      <div id="hint"></div>
-      
-      <div class="section">
-        <h3>🎨 Rysowanie</h3>
-        <div class="button-group">
-          <button onclick="startRouteMode()">🗺️ Rysuj trasę</button>
-          <button onclick="startParcelMode()">📦 Rysuj paczkę</button>
-          <button class="btn-success" onclick="confirmDraw()">✅ Zatwierdź</button>
-          <button class="btn-danger" onclick="cancelDraw()">❌ Anuluj</button>
-        </div>
-      </div>
-
-      <hr/>
-      
-      <div class="section">
-        <h3>📍 Zarządzanie</h3>
-        <div class="button-group">
-          <button onclick="showMyRoutes()">📍 Moje trasy</button>
-          <button onclick="loadMyParcels()">📦 Moje paczki</button>
-          <button class="btn-primary" onclick="propose()">🔍 Szukaj propozycji</button>
-        </div>
+<div id="panel">
+  <!-- Lewa kolumna - sterowanie -->
+  <div id="controls">
+    <div id="hint"></div>
+    
+    <div class="section">
+      <h3>🎨 Rysowanie</h3>
+      <div class="button-group">
+        <button onclick="startRouteMode()">🗺️ Rysuj trasę</button>
+        <button onclick="startParcelMode()">📦 Rysuj paczkę</button>
+        <button class="btn-success" onclick="confirmDraw()">✅ Zatwierdź</button>
+        <button class="btn-danger" onclick="cancelDraw()">❌ Anuluj</button>
       </div>
     </div>
-    
-    <!-- Prawa kolumna - wyniki -->
-    <div id="results">
-      <div class="section">
-        <h3>💡 Propozycje dopasowania</h3>
-        <div id="matches"></div>
-      </div>
 
-      <hr/>
-      
-      <div class="section">
-        <h3>📦 Moje paczki</h3>
-        <div id="parcels">
-          <em>Kliknij "📦 Moje paczki"</em>
-        </div>
+    <hr/>
+    
+    <div class="section">
+      <h3>📍 Zarządzanie</h3>
+      <div class="button-group">
+        <button onclick="showMyRoutes()">📍 Moje trasy</button>
+        <button onclick="loadMyParcels()">📦 Moje paczki</button>
+        <button class="btn-primary" onclick="propose()">🔍 Szukaj propozycji</button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Prawa kolumna - wyniki -->
+  <div id="results">
+    <div class="section">
+      <h3>💡 Propozycje dopasowania</h3>
+      <div id="matches"></div>
+    </div>
+
+    <hr/>
+    
+    <div class="section">
+      <h3>📦 Moje paczki</h3>
+      <div id="parcels">
+        <em>Kliknij "📦 Moje paczki"</em>
       </div>
     </div>
   </div>
 </div>
 
 <script src="app.js"></script>
-
-<script>
-// NOWY: Resizable separator
-(function() {
-  const separator = document.getElementById('separator');
-  const mapDiv = document.getElementById('map');
-  const container = document.getElementById('container');
-  
-  let isResizing = false;
-  
-  separator.addEventListener('mousedown', (e) => {
-    isResizing = true;
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-  });
-  
-  document.addEventListener('mousemove', (e) => {
-    if (!isResizing) return;
-    
-    const containerHeight = container.offsetHeight;
-    const newMapHeight = e.clientY;
-    
-    // Ogranicz do 20%-80% wysokości
-    const minHeight = containerHeight * 0.2;
-    const maxHeight = containerHeight * 0.8;
-    
-    if (newMapHeight >= minHeight && newMapHeight <= maxHeight) {
-      mapDiv.style.height = newMapHeight + 'px';
-      
-      // Invalidate map size (Leaflet)
-      if (window.map) {
-        setTimeout(() => window.map.invalidateSize(), 100);
-      }
-    }
-  });
-  
-  document.addEventListener('mouseup', () => {
-    if (isResizing) {
-      isResizing = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    }
-  });
-})();
-</script>
 
 </body>
 </html>

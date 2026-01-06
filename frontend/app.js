@@ -9,6 +9,23 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: "© OpenStreetMap"
 }).addTo(map);
 
+// NOWE: Paleta kolorów dla segmentów trasy
+const SEGMENT_COLORS = [
+  '#2196F3', // niebieski
+  '#4CAF50', // zielony
+  '#FF9800', // pomarańczowy
+  '#9C27B0', // fioletowy
+  '#F44336', // czerwony
+  '#00BCD4', // cyan
+  '#FFEB3B', // żółty
+  '#795548', // brązowy
+  '#607D8B', // szary-niebieski
+];
+
+function getSegmentColor(index) {
+  return SEGMENT_COLORS[index % SEGMENT_COLORS.length];
+}
+
 let mode = "idle";
 let drawMarkers = [];
 let drawLine = null;
@@ -246,6 +263,8 @@ function resetDraw() {
   }
   mode = "idle";
   setHint("");
+  // NOWE: Resetuj ROUTE_ID żeby można było dodać nową trasę
+  // (ale tylko jeśli nie jesteśmy w trybie przeglądania trasy)
 }
 
 function startRouteMode() {
@@ -289,6 +308,13 @@ async function createRouteFromPolyline(points) {
   const payloadPoints = points.map(p => ({ lng: p.lng, lat: p.lat }));
   try {
     showLoading("Tworzenie trasy (OSRM routing)...");
+    // NOWE: Wyczyść starą trasę z mapy przed dodaniem nowej
+    if (routeLayer) {
+      routeLayerGroup.clearLayers();
+      clearStartEndMarkers();
+      clearWaypointMarkers();
+      routeLayer = null;
+    }
     const r = await fetch(`${API_BASE}/routes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -365,143 +391,127 @@ async function selectRoute(routeId) {
   mode = "idle";
 }
 
-// NOWE: Timeline z klikalnymi punktami
+// Zamień funkcję showRouteTimeline w app.js
+
 async function showRouteTimeline(routeId) {
   try {
     showLoading("Pobieranie szczegółów trasy...");
+    
+    // NOWE: Użyj endpointu /segments
+    const segmentsRes = await fetch(`${API_BASE}/routes/${routeId}/segments`);
+    if (!segmentsRes.ok) throw new Error("Nie można pobrać segmentów trasy");
+    const segmentsData = await segmentsRes.json();
     
     const routeRes = await fetch(`${API_BASE}/routes/${routeId}`);
     if (!routeRes.ok) throw new Error("Nie można pobrać trasy");
     const route = await routeRes.json();
     
-    const matchesRes = await fetch(`${API_BASE}/routes/${routeId}/matches?status=accepted`);
-    if (!matchesRes.ok) throw new Error("Nie można pobrać paczek");
-    const matchesData = await matchesRes.json();
-    const acceptedMatches = matchesData.items || [];
-    
-    // Wyczyść waypoints i dodaj nowe
+    // Wyczyść waypoints i segmenty
     clearWaypointMarkers();
+    routeLayerGroup.clearLayers();
     
     const container = document.getElementById("matches");
     container.innerHTML = `
       <h4>📋 Szczegóły trasy #${routeId}</h4>
       <button onclick="showMyRoutes()">⬅ Wróć do tras</button>
+      <button onclick="selectRoute(${routeId})">👁 Pokaż tylko trasę</button>
       <hr style="margin:10px 0;"/>
     `;
     
     const timeline = document.createElement("div");
     timeline.style.marginTop = "10px";
     
-    let waypointIndex = 0;
+    const waypoints = segmentsData.waypoints;
+    const segments = segmentsData.segments;
     
-    // START
-    const startCoords = route.start_point.coordinates;
-    const startWaypointId = `wp-start`;
-    const startMarker = L.circleMarker([startCoords[1], startCoords[0]], {
-      color: "blue",
-      fillColor: "blue",
-      fillOpacity: 0.6,
-      radius: 8
-    }).bindPopup(`<b>START</b><br/>Początek trasy`).addTo(waypointsLayerGroup);
-    waypointMarkers[startWaypointId] = startMarker;
-    
-    timeline.innerHTML += `
-      <div style="border-left:3px solid blue; padding-left:10px; margin-bottom:15px; cursor:pointer;"
-           onclick="highlightWaypoint('${startWaypointId}')"
-           onmouseover="this.style.background='#f0f0f0'"
-           onmouseout="this.style.background='white'">
-        <strong>🔵 START</strong><br/>
-        <small>Początek trasy</small>
-      </div>
-    `;
-    
-    // Paczki (pickup i drop)
-    for (let i = 0; i < acceptedMatches.length; i++) {
-      const match = acceptedMatches[i];
-      const pickupCoords = match.pickup_point.coordinates;
-      const dropCoords = match.drop_point.coordinates;
+    // NARYSUJ KOLOROWE SEGMENTY PO DROGACH
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
+      const segmentColor = getSegmentColor(i);
       
-      waypointIndex++;
+      if (segment.geometry && segment.geometry.type === "LineString") {
+        const coords = segment.geometry.coordinates.map(c => [c[1], c[0]]); // [lat, lng]
+        
+        const polyline = L.polyline(coords, {
+          color: segmentColor,
+          weight: 5,
+          opacity: 0.8,
+        }).bindPopup(`
+          <b>Segment ${i + 1}</b><br/>
+          ${waypoints[segment.from_index].label} →<br/>
+          ${waypoints[segment.to_index].label}<br/>
+          <small>${(segment.distance_m / 1000).toFixed(1)} km, ${(segment.duration_s / 60).toFixed(0)} min</small>
+        `).addTo(routeLayerGroup);
+      }
+    }
+    
+    // TIMELINE Z NUMERACJĄ
+    for (let i = 0; i < waypoints.length; i++) {
+      const wp = waypoints[i];
+      const segmentColor = i < segments.length ? getSegmentColor(i) : '#999';
       
-      // PICKUP marker
-      const pickupWaypointId = `wp-pickup-${match.parcel_id}`;
-      const pickupMarker = L.circleMarker([pickupCoords[1], pickupCoords[0]], {
-        color: "green",
-        fillColor: "green",
-        fillOpacity: 0.6,
-        radius: 8
-      }).bindPopup(`<b>${waypointIndex}. PICKUP</b><br/>Paczka #${match.parcel_id}`).addTo(waypointsLayerGroup);
-      waypointMarkers[pickupWaypointId] = pickupMarker;
+      let icon = '📍';
+      
+      if (wp.type === 'start') {
+        icon = '🔵';
+      } else if (wp.type === 'end') {
+        icon = '🔴';
+      } else if (wp.type === 'pickup') {
+        icon = '🟢';
+      } else if (wp.type === 'drop') {
+        icon = '🔴';
+      }
+      
+      // Marker na mapie
+      const waypointId = `wp-${wp.type}-${wp.parcel_id || i}`;
+      const marker = L.circleMarker([wp.coords[1], wp.coords[0]], {
+        color: segmentColor,
+        fillColor: segmentColor,
+        fillOpacity: 0.8,
+        radius: 10,
+        weight: 3,
+      }).bindPopup(`<b>${i === 0 || i === waypoints.length - 1 ? '' : i + '. '}${wp.label}</b>`).addTo(waypointsLayerGroup);
+      
+      waypointMarkers[waypointId] = marker;
+      
+      // Timeline entry
+      const displayNumber = (wp.type === 'start' || wp.type === 'end') ? '' : `${i}. `;
       
       timeline.innerHTML += `
-        <div style="border-left:3px solid green; padding-left:10px; margin-bottom:15px; cursor:pointer;"
-             onclick="highlightWaypoint('${pickupWaypointId}')"
+        <div style="border-left:4px solid ${segmentColor}; padding-left:10px; margin-bottom:15px; cursor:pointer;"
+             onclick="highlightWaypoint('${waypointId}')"
              onmouseover="this.style.background='#f0f0f0'"
              onmouseout="this.style.background='white'">
-          <strong>${waypointIndex}. 🟢 PICKUP - Paczka #${match.parcel_id}</strong><br/>
-          <small>Odbiór przesyłki</small><br/>
-          ${i > 0 ? `<small style="color:#666;">+${(match.pickup_to_route_m / 1000).toFixed(1)} km</small>` : ''}
-        </div>
-      `;
-      
-      waypointIndex++;
-      
-      // DROP marker
-      const dropWaypointId = `wp-drop-${match.parcel_id}`;
-      const dropMarker = L.circleMarker([dropCoords[1], dropCoords[0]], {
-        color: "darkred",
-        fillColor: "darkred",
-        fillOpacity: 0.6,
-        radius: 8
-      }).bindPopup(`<b>${waypointIndex}. DROP</b><br/>Paczka #${match.parcel_id}`).addTo(waypointsLayerGroup);
-      waypointMarkers[dropWaypointId] = dropMarker;
-      
-      timeline.innerHTML += `
-        <div style="border-left:3px solid darkred; padding-left:10px; margin-bottom:15px; cursor:pointer;"
-             onclick="highlightWaypoint('${dropWaypointId}')"
-             onmouseover="this.style.background='#f0f0f0'"
-             onmouseout="this.style.background='white'">
-          <strong>${waypointIndex}. 🔴 DROP - Paczka #${match.parcel_id}</strong><br/>
-          <small>Dostawa przesyłki</small><br/>
-          <small style="color:#666;">+${(match.drop_to_route_m / 1000).toFixed(1)} km</small>
+          <strong>${displayNumber}${icon} ${wp.label}</strong><br/>
+          ${wp.type === 'pickup' ? '<small>Odbiór przesyłki</small>' : ''}
+          ${wp.type === 'drop' ? '<small>Dostawa przesyłki</small>' : ''}
+          ${wp.type === 'start' ? '<small>Początek trasy</small>' : ''}
+          ${wp.type === 'end' ? '<small>Koniec trasy</small>' : ''}
         </div>
       `;
     }
     
-    // END
-    const endCoords = route.end_point.coordinates;
-    const endWaypointId = `wp-end`;
-    const endMarker = L.circleMarker([endCoords[1], endCoords[0]], {
-      color: "red",
-      fillColor: "red",
-      fillOpacity: 0.6,
-      radius: 8
-    }).bindPopup(`<b>END</b><br/>Koniec trasy`).addTo(waypointsLayerGroup);
-    waypointMarkers[endWaypointId] = endMarker;
-    
-    timeline.innerHTML += `
-      <div style="border-left:3px solid red; padding-left:10px; margin-bottom:15px; cursor:pointer;"
-           onclick="highlightWaypoint('${endWaypointId}')"
-           onmouseover="this.style.background='#f0f0f0'"
-           onmouseout="this.style.background='white'">
-        <strong>🔴 END</strong><br/>
-        <small>Koniec trasy</small>
-      </div>
-    `;
-    
     // Podsumowanie
+    const totalSegments = segments.filter(s => !s.error).length;
     timeline.innerHTML += `
       <hr style="margin:10px 0;"/>
       <div style="background:#f0f0f0; padding:10px; border-radius:5px;">
         <strong>Podsumowanie:</strong><br/>
         Całkowity dystans: ${(route.distance_m / 1000).toFixed(1)} km<br/>
         Całkowity czas: ${(route.duration_s / 60).toFixed(0)} min<br/>
-        Liczba paczek: ${acceptedMatches.length}<br/>
-        <small style="color:#666;">💡 Kliknij na punkt aby zobaczyć go na mapie</small>
+        Liczba punktów: ${waypoints.length}<br/>
+        Liczba segmentów: ${totalSegments}<br/>
+        <small style="color:#666;">💡 Kliknij na punkt aby zobaczyć go na mapie</small><br/>
+        <small style="color:#666;">🎨 Każdy segment po drodze ma inny kolor</small>
       </div>
     `;
     
     container.appendChild(timeline);
+    
+    // Dopasuj mapę
+    const allPoints = waypoints.map(wp => [wp.coords[1], wp.coords[0]]);
+    map.fitBounds(L.latLngBounds(allPoints));
+    
     hideLoading();
   } catch (error) {
     showError(error.message);
