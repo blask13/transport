@@ -1,4 +1,4 @@
-# backend/app/matching.py - FIXED MULTI-PARCEL
+# backend/app/matching.py - WITH HISTORY LOGGING
 from __future__ import annotations
 
 from sqlalchemy.orm import Session
@@ -13,19 +13,23 @@ from geoalchemy2.elements import WKTElement
 def propose_matches_for_route(
     route_id: int,
     db: Session,
-    buffer_m: float = 50000.0,  # 50 km dla testów
+    buffer_m: float = 500000.0,  # 2 km – MVP
 ):
     """
     ETAP 2 – PROPOZYCJE:
     - wybór paczek w buforze trasy (PostGIS)
+    - brak odrzucania na podstawie kolejności
     - liczenie kosztu wpięcia (Δ km / Δ czasu) przez OSRM
     - sortowanie od najbardziej do najmniej opłacalnej
+    - decyzję podejmuje kurier
     """
 
+    # --- 1) Sprawdź trasę ---
     route = db.get(Route, route_id)
     if not route or not route.is_active:
         return []
     
+    # --- 1b) Wyciągnij współrzędne start/end z PostGIS ---
     coords_sql = text(
         """
         SELECT
@@ -41,6 +45,7 @@ def propose_matches_for_route(
     if not coords or coords["start_lng"] is None or coords["end_lng"] is None:
         return []
 
+    # --- 2) Zapytanie PostGIS ---
     sql = text(
         """
         SELECT
@@ -77,42 +82,22 @@ def propose_matches_for_route(
         """
     )
 
-    rows = db.execute(sql, {"route_id": route_id, "buffer_m": buffer_m}).all()
+    rows = db.execute(
+        sql,
+        {
+            "route_id": route_id,
+            "buffer_m": buffer_m,
+        },
+    ).all()
 
     if not rows:
         return []
 
-    # ZMIANA: Pobierz WSZYSTKIE zaakceptowane paczki na tej trasie
-    accepted_parcels = db.execute(
-        select(RouteParcelMatch.parcel_id)
-        .where(RouteParcelMatch.route_id == route_id)
-        .where(RouteParcelMatch.status == "accepted")
-    ).scalars().all()
-
-    # Buduj trasę z WSZYSTKIMI paczkami
-    waypoints = [(coords["start_lng"], coords["start_lat"])]
-    
-    # Dodaj wszystkie zaakceptowane paczki
-    for parcel_id in accepted_parcels:
-        pcoords = db.execute(
-            text("""
-                SELECT
-                  ST_X(pickup_point) AS pickup_lng,
-                  ST_Y(pickup_point) AS pickup_lat,
-                  ST_X(drop_point)   AS drop_lng,
-                  ST_Y(drop_point)   AS drop_lat
-                FROM parcels WHERE id = :parcel_id
-            """),
-            {"parcel_id": parcel_id}
-        ).mappings().first()
-        if pcoords:
-            waypoints.append((pcoords["pickup_lng"], pcoords["pickup_lat"]))
-            waypoints.append((pcoords["drop_lng"], pcoords["drop_lat"]))
-    
-    waypoints.append((coords["end_lng"], coords["end_lat"]))
-
-    # Trasa bazowa = obecny stan (z już zaakceptowanymi paczkami)
-    base = osrm_route(waypoints)
+    # --- 3) OSRM: trasa bazowa (1x) ---
+    base = osrm_route([
+        (coords["start_lng"], coords["start_lat"]),
+        (coords["end_lng"], coords["end_lat"]),
+    ])
 
     results = []
 
@@ -136,13 +121,14 @@ def propose_matches_for_route(
         if not pcoords:
             continue
 
-        # ZMIANA: Wariant = obecna trasa + nowa paczka
-        variant_waypoints = waypoints[:-1]  # bez end
-        variant_waypoints.append((pcoords["pickup_lng"], pcoords["pickup_lat"]))
-        variant_waypoints.append((pcoords["drop_lng"], pcoords["drop_lat"]))
-        variant_waypoints.append((coords["end_lng"], coords["end_lat"]))
-
-        variant = osrm_route(variant_waypoints)
+        variant = osrm_route(
+            [
+                (coords["start_lng"], coords["start_lat"]),
+                (pcoords["pickup_lng"], pcoords["pickup_lat"]),
+                (pcoords["drop_lng"],   pcoords["drop_lat"]),
+                (coords["end_lng"],     coords["end_lat"]),
+            ],
+        )
 
         delta_distance = variant["distance_m"] - base["distance_m"]
         delta_duration = variant["duration_s"] - base["duration_s"]
@@ -162,7 +148,6 @@ def propose_matches_for_route(
                 "buffer_m": buffer_m,
                 "base": base,
                 "variant": variant,
-                "accepted_parcels_count": len(accepted_parcels),
             }),
             status="proposed",
         )
@@ -177,7 +162,10 @@ def propose_matches_for_route(
             "delta_duration_s": round(delta_duration),
         })
     
-    results.sort(key=lambda r: (r["delta_distance_m"], r["delta_duration_s"]))
+    # --- 4) Sortowanie ---
+    results.sort(
+        key=lambda r: (r["delta_distance_m"], r["delta_duration_s"])
+    )
     db.commit()
 
     return results
@@ -185,9 +173,11 @@ def propose_matches_for_route(
 
 def accept_match(match_id: int, db: Session, changed_by: str = "system"):
     """
-    ETAP 5 – ACCEPT z MULTI-PARCEL support:
-    - Nie nadpisuje trasy, tylko DODAJE paczkę
-    - Przelicza trasę ze WSZYSTKIMI zaakceptowanymi paczkami
+    ETAP 5 – ACCEPT z logowaniem historii:
+    - transakcja + FOR UPDATE
+    - snapshot przed zmianą
+    - aktualizacja trasy
+    - log do route_history
     """
 
     with db.begin():
@@ -238,73 +228,37 @@ def accept_match(match_id: int, db: Session, changed_by: str = "system"):
         if parcel.status in ("accepted", "cancelled", "rejected"):
             raise ValueError(f"parcel_not_pending:{parcel.status}")
 
-        # --- 4) KLUCZ: Pobierz WSZYSTKIE zaakceptowane paczki + nową ---
-        
-        # Pobierz start/end trasy
-        route_coords = db.execute(
-            text("""
-                SELECT
-                  ST_X(start_point) AS start_lng,
-                  ST_Y(start_point) AS start_lat,
-                  ST_X(end_point)   AS end_lng,
-                  ST_Y(end_point)   AS end_lat
-                FROM routes WHERE id = :route_id
-            """),
-            {"route_id": route.id}
+        # --- 4) Pobierz współrzędne ---
+        coords_sql = text(
+            """
+            SELECT
+              ST_X(r.start_point) AS start_lng,
+              ST_Y(r.start_point) AS start_lat,
+              ST_X(p.pickup_point) AS pickup_lng,
+              ST_Y(p.pickup_point) AS pickup_lat,
+              ST_X(p.drop_point) AS drop_lng,
+              ST_Y(p.drop_point) AS drop_lat,
+              ST_X(r.end_point) AS end_lng,
+              ST_Y(r.end_point) AS end_lat
+            FROM routes r
+            JOIN parcels p ON p.id = :parcel_id
+            WHERE r.id = :route_id
+            """
+        )
+        coords = db.execute(
+            coords_sql, {"route_id": route.id, "parcel_id": parcel.id}
         ).mappings().first()
         
-        if not route_coords:
-            raise ValueError("route_coords_not_found")
+        if not coords:
+            raise ValueError("coords_not_found")
 
-        # Pobierz wszystkie ZAAKCEPTOWANE paczki (bez obecnej)
-        accepted_parcels = db.execute(
-            select(RouteParcelMatch.parcel_id)
-            .where(RouteParcelMatch.route_id == route.id)
-            .where(RouteParcelMatch.status == "accepted")
-        ).scalars().all()
-
-        # Buduj waypoints: start → all_accepted_pickups/drops → new_pickup/drop → end
-        waypoints = [(route_coords["start_lng"], route_coords["start_lat"])]
-        
-        # Dodaj wszystkie już zaakceptowane paczki
-        for pid in accepted_parcels:
-            pcoords = db.execute(
-                text("""
-                    SELECT
-                      ST_X(pickup_point) AS pickup_lng,
-                      ST_Y(pickup_point) AS pickup_lat,
-                      ST_X(drop_point)   AS drop_lng,
-                      ST_Y(drop_point)   AS drop_lat
-                    FROM parcels WHERE id = :pid
-                """),
-                {"pid": pid}
-            ).mappings().first()
-            if pcoords:
-                waypoints.append((pcoords["pickup_lng"], pcoords["pickup_lat"]))
-                waypoints.append((pcoords["drop_lng"], pcoords["drop_lat"]))
-        
-        # Dodaj NOWĄ paczkę
-        new_parcel_coords = db.execute(
-            text("""
-                SELECT
-                  ST_X(pickup_point) AS pickup_lng,
-                  ST_Y(pickup_point) AS pickup_lat,
-                  ST_X(drop_point)   AS drop_lng,
-                  ST_Y(drop_point)   AS drop_lat
-                FROM parcels WHERE id = :pid
-            """),
-            {"pid": parcel.id}
-        ).mappings().first()
-        
-        if not new_parcel_coords:
-            raise ValueError("new_parcel_coords_not_found")
-        
-        waypoints.append((new_parcel_coords["pickup_lng"], new_parcel_coords["pickup_lat"]))
-        waypoints.append((new_parcel_coords["drop_lng"], new_parcel_coords["drop_lat"]))
-        waypoints.append((route_coords["end_lng"], route_coords["end_lat"]))
-
-        # --- 5) OSRM: nowa trasa ze WSZYSTKIMI paczkami ---
-        variant = osrm_route(waypoints, with_geometry=True)
+        # --- 5) OSRM: nowa trasa ---
+        variant = osrm_route([
+            (coords["start_lng"], coords["start_lat"]),
+            (coords["pickup_lng"], coords["pickup_lat"]),
+            (coords["drop_lng"],   coords["drop_lat"]),
+            (coords["end_lng"],   coords["end_lat"]),
+        ], with_geometry=True)
 
         geometry = variant.get("geometry")
         if not geometry or geometry["type"] != "LineString":
@@ -339,15 +293,14 @@ def accept_match(match_id: int, db: Session, changed_by: str = "system"):
             parcel_id=parcel.id,
             old_snapshot=old_snapshot,
             new_snapshot=new_snapshot,
-            notes=f"Match #{match.id} accepted. Total parcels: {len(accepted_parcels) + 1}",
+            notes=f"Match #{match.id} accepted",
         )
 
         # --- 9) Statusy ---
         match.status = "accepted"
         parcel.status = "accepted"
 
-        # --- 10) Unieważnij inne match'e TYLKO TEJ paczki ---
-        # NIE kasujemy innych propozycji tej trasy!
+        # --- 10) Unieważnij inne match'e tej paczki ---
         db.query(RouteParcelMatch).filter(
             RouteParcelMatch.parcel_id == parcel.id,
             RouteParcelMatch.id != match.id,
@@ -358,5 +311,4 @@ def accept_match(match_id: int, db: Session, changed_by: str = "system"):
             "parcel_id": int(parcel.id),
             "new_distance_m": float(route.distance_m),
             "new_duration_s": float(route.duration_s),
-            "total_parcels": len(accepted_parcels) + 1,
         }

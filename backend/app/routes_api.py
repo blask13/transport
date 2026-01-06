@@ -270,14 +270,27 @@ def accept_route_match(match_id: int, db: Session = Depends(get_db)):
 
 
 
+# Fragment do zastąpienia w backend/app/routes_api.py
+
 @router.delete("/{route_id}")
 def cancel_route(route_id: int, db: Session = Depends(get_db)):
+    """
+    Anuluje trasę i przywraca paczki do stanu 'pending'.
+    
+    LOGIKA:
+    1. Trasa is_active = False
+    2. Propozycje (proposed) → expired
+    3. Paczki (accepted na tej trasie) → pending (żeby inni mogli je wziąć)
+    4. Paczki (accepted, ale nie dostarczonych) → pending
+    """
     route = db.get(Route, route_id)
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
+    
+    # 1. Anuluj trasę
     route.is_active = False
 
-    # Odrzuć wiszące propozycje tej trasy
+    # 2. Odrzuć wiszące propozycje tej trasy
     db.query(RouteParcelMatch).filter(
         RouteParcelMatch.route_id == route.id,
         RouteParcelMatch.status == "proposed",
@@ -286,8 +299,29 @@ def cancel_route(route_id: int, db: Session = Depends(get_db)):
         synchronize_session=False,
     )
 
+    # 3. NOWE: Przywróć paczki do pending
+    # Znajdź wszystkie zaakceptowane paczki tej trasy
+    accepted_matches = db.query(RouteParcelMatch).filter(
+        RouteParcelMatch.route_id == route.id,
+        RouteParcelMatch.status == "accepted",
+    ).all()
+    
+    for match in accepted_matches:
+        parcel = db.get(Parcel, match.parcel_id)
+        if parcel and parcel.status == "accepted":
+            # Przywróć paczkę do pending
+            parcel.status = "pending"
+            
+            # Oznacz match jako expired
+            match.status = "expired"
+    
     db.commit()
-    return {"status": "cancelled"}
+    
+    return {
+        "status": "cancelled",
+        "parcels_restored": len(accepted_matches),
+        "message": f"Trasa anulowana. {len(accepted_matches)} paczek przywróconych do pending."
+    }
 
 @router.get("/{route_id}/history")
 def get_route_history(
