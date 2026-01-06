@@ -13,41 +13,260 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <style>
-    body { margin: 0; font-family: sans-serif; }
-    #map { height: 70vh; }
+    * {
+      box-sizing: border-box;
+    }
+    
+    body { 
+      margin: 0; 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f5f5f5;
+    }
+    
+    #map { 
+      height: 65vh; 
+      border-bottom: 3px solid #2196F3;
+    }
+    
     #panel {
+      padding: 20px;
+      background: white;
+      max-height: 35vh;
+      overflow-y: auto;
+    }
+    
+    h3 {
+      margin: 0 0 15px 0;
+      color: #333;
+      font-size: 18px;
+      border-bottom: 2px solid #eee;
+      padding-bottom: 8px;
+    }
+    
+    h4 {
+      margin: 15px 0 10px 0;
+      color: #666;
+      font-size: 16px;
+    }
+    
+    #hint {
+      margin-bottom: 12px;
       padding: 10px;
-      border-top: 1px solid #ccc;
+      border-radius: 4px;
+      background: #E3F2FD;
+      color: #1976D2;
+      font-size: 14px;
+      min-height: 20px;
+      transition: all 0.3s ease;
     }
-    .match {
-      border: 1px solid #ddd;
-      margin-bottom: 8px;
-      padding: 8px;
+    
+    #hint:empty {
+      display: none;
     }
+    
+    .button-group {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 15px;
+    }
+    
     button {
-      padding: 6px 10px;
+      padding: 10px 16px;
       cursor: pointer;
+      border: 1px solid #ddd;
+      background: white;
+      border-radius: 4px;
+      font-size: 14px;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    button:hover {
+      background: #f5f5f5;
+      border-color: #2196F3;
+      transform: translateY(-1px);
+    }
+    
+    button:active {
+      transform: translateY(0);
+    }
+    
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .btn-primary {
+      background: #2196F3;
+      color: white;
+      border-color: #2196F3;
+    }
+    
+    .btn-primary:hover {
+      background: #1976D2;
+      border-color: #1976D2;
+    }
+    
+    .btn-success {
+      background: #4CAF50;
+      color: white;
+      border-color: #4CAF50;
+    }
+    
+    .btn-success:hover {
+      background: #45a049;
+    }
+    
+    .btn-danger {
+      background: #f44336;
+      color: white;
+      border-color: #f44336;
+    }
+    
+    .btn-danger:hover {
+      background: #da190b;
+    }
+    
+    .match, .parcel {
+      border: 1px solid #e0e0e0;
+      margin-bottom: 10px;
+      padding: 12px;
+      border-radius: 6px;
+      background: #fafafa;
+      transition: all 0.2s ease;
+    }
+    
+    .match:hover, .parcel:hover {
+      border-color: #2196F3;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    
+    .match strong, .parcel strong {
+      color: #333;
+      font-size: 15px;
+    }
+    
+    .match small {
+      color: #666;
+    }
+    
+    .status-pending {
+      color: #FF9800;
+      font-weight: bold;
+    }
+    
+    .status-accepted {
+      color: #4CAF50;
+      font-weight: bold;
+    }
+    
+    .status-cancelled {
+      color: #9E9E9E;
+      font-weight: bold;
+    }
+    
+    .status-rejected {
+      color: #f44336;
+      font-weight: bold;
+    }
+    
+    hr {
+      border: none;
+      border-top: 2px solid #eee;
+      margin: 20px 0;
+    }
+    
+    em {
+      color: #999;
+      font-style: italic;
+    }
+    
+    .section {
+      margin-bottom: 20px;
+    }
+    
+    .stats {
+      display: flex;
+      gap: 15px;
+      margin: 10px 0;
+      font-size: 13px;
+      color: #666;
+    }
+    
+    .stat-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    
+    @media (max-width: 768px) {
+      #map {
+        height: 50vh;
+      }
+      
+      #panel {
+        max-height: 50vh;
+      }
+      
+      .button-group {
+        flex-direction: column;
+      }
+      
+      button {
+        width: 100%;
+        justify-content: center;
+      }
     }
   </style>
 </head>
 <body>
 
 <div id="map"></div>
+
 <div id="panel">
-  <h3>Propozycje</h3>
-  <div id="hint" style="margin-bottom:8px;color:#555;"></div>
-  <button onclick="startRouteMode()">🗺️ Rysuj trasę (kurier)</button>
-  <button onclick="startParcelMode()">📦 Rysuj paczkę (nadawca)</button>
-  <button onclick="showMyRoutes()">📍 Moje trasy</button>
-  <button onclick="loadMyParcels()">📦 Moje paczki</button>
-  <button onclick="confirmDraw()">✅ Zatwierdź</button>
-  <button onclick="cancelDraw()">❌ Anuluj</button>
-  <hr/>  
-  <button onclick="propose()">🔍 Szukaj propozycji</button>
-  <div id="matches"></div>
+  <div id="hint"></div>
+  
+  <div class="section">
+    <h3>🎨 Rysowanie</h3>
+    <div class="button-group">
+      <button onclick="startRouteMode()">🗺️ Rysuj trasę (kurier)</button>
+      <button onclick="startParcelMode()">📦 Rysuj paczkę (nadawca)</button>
+      <button class="btn-success" onclick="confirmDraw()">✅ Zatwierdź</button>
+      <button class="btn-danger" onclick="cancelDraw()">❌ Anuluj</button>
+    </div>
+  </div>
+
   <hr/>
-  <h3 style="margin:8px 0;">📦 Moje paczki</h3>
-  <div id="parcels"></div>  
+  
+  <div class="section">
+    <h3>📍 Zarządzanie</h3>
+    <div class="button-group">
+      <button onclick="showMyRoutes()">📍 Moje trasy</button>
+      <button onclick="loadMyParcels()">📦 Moje paczki</button>
+      <button class="btn-primary" onclick="propose()">🔍 Szukaj propozycji</button>
+    </div>
+  </div>
+
+  <hr/>
+  
+  <div class="section">
+    <h3>💡 Propozycje dopasowania</h3>
+    <div id="matches">
+      <em>Wybierz trasę i kliknij "🔍 Szukaj propozycji"</em>
+    </div>
+  </div>
+
+  <hr/>
+  
+  <div class="section">
+    <h3>📦 Moje paczki</h3>
+    <div id="parcels">
+      <em>Ładowanie...</em>
+    </div>
+  </div>
 </div>
 
 <script src="app.js"></script>

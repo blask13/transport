@@ -1,11 +1,11 @@
-# backend\app\matching.py
+# backend/app/matching.py - WITH HISTORY LOGGING
 from __future__ import annotations
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text, select
 from .osrm import osrm_route
-from .models import RouteParcelMatch, Parcel
-from .models import Route
+from .models import RouteParcelMatch, Parcel, Route
+from .history import log_route_change
 import json
 from geoalchemy2.elements import WKTElement
 
@@ -13,7 +13,7 @@ from geoalchemy2.elements import WKTElement
 def propose_matches_for_route(
     route_id: int,
     db: Session,
-    buffer_m: float = 2000000.0,  # 2 km – MVP
+    buffer_m: float = 2000.0,  # 2 km – MVP
 ):
     """
     ETAP 2 – PROPOZYCJE:
@@ -28,7 +28,8 @@ def propose_matches_for_route(
     route = db.get(Route, route_id)
     if not route or not route.is_active:
         return []
-    # --- 1b) Wyciągnij współrzędne start/end z PostGIS (bez .x/.y na WKBElement) ---
+    
+    # --- 1b) Wyciągnij współrzędne start/end z PostGIS ---
     coords_sql = text(
         """
         SELECT
@@ -42,12 +43,9 @@ def propose_matches_for_route(
     )
     coords = db.execute(coords_sql, {"route_id": route_id}).mappings().first()
     if not coords or coords["start_lng"] is None or coords["end_lng"] is None:
-        return []  # albo raise, ale na MVP zwróć pusto jeśli trasa uszkodzona
+        return []
 
     # --- 2) Zapytanie PostGIS ---
-    # Uwaga:
-    # - geometrie są w SRID 4326 (stopnie)
-    # - bufor liczymy w metrach -> rzut do geography
     sql = text(
         """
         SELECT
@@ -63,15 +61,12 @@ def propose_matches_for_route(
         FROM parcels p
         JOIN routes r ON r.id = :route_id
         WHERE
-            -- paczka ma być widoczna dla wielu kurierów aż do ACCEPT albo CANCEL
-            -- więc proponujemy zarówno pending jak i offered (jeśli już masz takie w DB)
             p.status = ANY(ARRAY['pending'::text, 'offered'::text])
             AND NOT EXISTS (
                 SELECT 1
                 FROM route_parcel_matches m
                 WHERE m.route_id = :route_id
                   AND m.parcel_id = p.id
-                  -- nie dubluj aktywnych propozycji dla tej samej trasy
                   AND m.status IN ('proposed', 'accepted')
             )
             AND ST_DWithin(            
@@ -95,7 +90,6 @@ def propose_matches_for_route(
         },
     ).all()
 
-    # --- 3) Zwróć TYLKO identyfikatory kandydatów ---
     if not rows:
         return []
 
@@ -112,7 +106,6 @@ def propose_matches_for_route(
         if not parcel:
             continue
 
-        # pickup/drop też mogą być WKBElement -> bierzemy współrzędne przez SQL
         pcoords_sql = text(
             """
             SELECT
@@ -160,14 +153,16 @@ def propose_matches_for_route(
         )
 
         db.add(match)
-        db.flush()  # <-- dostajemy match.id bez commit
+        db.flush()
+        
         results.append({
             "match_id": match.id,
             "parcel_id": parcel.id,
             "delta_distance_m": round(delta_distance),
             "delta_duration_s": round(delta_duration),
         })
-    # --- 4) Sortowanie: najbardziej -> najmniej opłacalna ---
+    
+    # --- 4) Sortowanie ---
     results.sort(
         key=lambda r: (r["delta_distance_m"], r["delta_duration_s"])
     )
@@ -176,18 +171,15 @@ def propose_matches_for_route(
     return results
 
 
-
-
-
-def accept_match(match_id: int, db: Session):
+def accept_match(match_id: int, db: Session, changed_by: str = "system"):
     """
-    ETAP 5.1 – ACCEPT (utwardzenie):
-    - transakcja + FOR UPDATE (RouteParcelMatch + Route + Parcel)
-    - blokady logiczne
-    - idempotencja (kontrolowany błąd)
+    ETAP 5 – ACCEPT z logowaniem historii:
+    - transakcja + FOR UPDATE
+    - snapshot przed zmianą
+    - aktualizacja trasy
+    - log do route_history
     """
 
-    # Całość w transakcji – jak cokolwiek padnie, to rollback
     with db.begin():
         # --- 1) Lock match ---
         match = db.execute(
@@ -199,7 +191,6 @@ def accept_match(match_id: int, db: Session):
         if not match:
             raise ValueError("match_not_found")
 
-        # Idempotencja / kontrolowany błąd
         if match.status == "accepted":
             raise ValueError("match_already_accepted")
         if match.status != "proposed":
@@ -211,10 +202,18 @@ def accept_match(match_id: int, db: Session):
             .where(Route.id == match.route_id)
             .with_for_update()
         ).scalar_one_or_none()
+        
         if not route:
             raise ValueError("route_not_found")
         if not route.is_active:
             raise ValueError("route_inactive")
+
+        # --- 2b) Snapshot PRZED zmianą ---
+        old_snapshot = {
+            "geom": route.geom,
+            "distance_m": float(route.distance_m),
+            "duration_s": float(route.duration_s),
+        }
 
         # --- 3) Lock parcel ---
         parcel = db.execute(
@@ -222,14 +221,14 @@ def accept_match(match_id: int, db: Session):
             .where(Parcel.id == match.parcel_id)
             .with_for_update()
         ).scalar_one_or_none()
+        
         if not parcel:
             raise ValueError("parcel_not_found")
 
-        # Bezpiecznik: paczka już zaakceptowana/anulowana
         if parcel.status in ("accepted", "cancelled", "rejected"):
             raise ValueError(f"parcel_not_pending:{parcel.status}")
 
-        # --- 4) Pobierz współrzędne start / pickup / drop / end ---
+        # --- 4) Pobierz współrzędne ---
         coords_sql = text(
             """
             SELECT
@@ -249,10 +248,11 @@ def accept_match(match_id: int, db: Session):
         coords = db.execute(
             coords_sql, {"route_id": route.id, "parcel_id": parcel.id}
         ).mappings().first()
+        
         if not coords:
             raise ValueError("coords_not_found")
 
-        # --- 5) OSRM: wariant (start→pickup→drop→end) + PEŁNA GEOMETRIA ---
+        # --- 5) OSRM: nowa trasa ---
         variant = osrm_route([
             (coords["start_lng"], coords["start_lat"]),
             (coords["pickup_lng"], coords["pickup_lat"]),
@@ -260,35 +260,51 @@ def accept_match(match_id: int, db: Session):
             (coords["end_lng"],   coords["end_lat"]),
         ], with_geometry=True)
 
-        # --- 6) Trasa = jeden stan prawdy (nadpisanie) ---
         geometry = variant.get("geometry")
         if not geometry or geometry["type"] != "LineString":
             raise ValueError("invalid_osrm_geometry")
 
-        coords_list = geometry["coordinates"]  # [[lng, lat], ...]
-        route.geom = WKTElement(
+        coords_list = geometry["coordinates"]
+        new_geom = WKTElement(
             "LINESTRING(" + ", ".join(
                 f"{lng} {lat}" for lng, lat in coords_list
             ) + ")",
             srid=4326,
         )
 
+        # --- 6) Aktualizuj trasę ---
+        route.geom = new_geom
         route.distance_m = float(variant["distance_m"])
         route.duration_s = float(variant["duration_s"])
 
-        # --- 7) Statusy ---
+        # --- 7) Snapshot PO zmianie ---
+        new_snapshot = {
+            "geom": new_geom,
+            "distance_m": route.distance_m,
+            "duration_s": route.duration_s,
+        }
+
+        # --- 8) LOG HISTORII ---
+        log_route_change(
+            db=db,
+            route_id=route.id,
+            change_type="parcel_accepted",
+            changed_by=changed_by,
+            parcel_id=parcel.id,
+            old_snapshot=old_snapshot,
+            new_snapshot=new_snapshot,
+            notes=f"Match #{match.id} accepted",
+        )
+
+        # --- 9) Statusy ---
         match.status = "accepted"
         parcel.status = "accepted"
 
-        # --- 8) Unieważnij inne match’e tej paczki (rejected) ---
+        # --- 10) Unieważnij inne match'e tej paczki ---
         db.query(RouteParcelMatch).filter(
             RouteParcelMatch.parcel_id == parcel.id,
             RouteParcelMatch.id != match.id,
         ).update({"status": "rejected"}, synchronize_session=False)
-
-        # --- 9) NIE kasuj innych propozycji tej trasy ---
-        # W MVP trasa może mieć wiele proponowanych paczek równolegle.
-        # Kasujemy tylko te propozycje, które dotyczą tej paczki (pkt 8).
 
         return {
             "route_id": int(route.id),

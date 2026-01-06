@@ -9,6 +9,8 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from sqlalchemy import func
+from .history import RouteHistory
+from sqlalchemy import desc
 
 from .db import get_db
 from .models import Route, Parcel, RouteParcelMatch
@@ -286,3 +288,60 @@ def cancel_route(route_id: int, db: Session = Depends(get_db)):
 
     db.commit()
     return {"status": "cancelled"}
+
+@router.get("/{route_id}/history")
+def get_route_history(
+    route_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Historia zmian trasy - timeline.
+    """
+    # Sprawdź czy trasa istnieje
+    exists = db.execute(
+        select(Route.id).where(Route.id == route_id)
+    ).scalar_one_or_none()
+    
+    if not exists:
+        raise HTTPException(status_code=404, detail="Route not found")
+    
+    # Pobierz historię
+    rows = db.execute(
+        select(
+            RouteHistory.id,
+            RouteHistory.change_type,
+            RouteHistory.changed_by,
+            RouteHistory.parcel_id,
+            RouteHistory.old_distance_m,
+            RouteHistory.old_duration_s,
+            RouteHistory.new_distance_m,
+            RouteHistory.new_duration_s,
+            RouteHistory.delta_distance_m,
+            RouteHistory.delta_duration_s,
+            RouteHistory.notes,
+            RouteHistory.created_at,
+        )
+        .where(RouteHistory.route_id == route_id)
+        .order_by(desc(RouteHistory.created_at))
+    ).mappings().all()
+    
+    return {
+        "route_id": route_id,
+        "history": [
+            {
+                "id": r["id"],
+                "change_type": r["change_type"],
+                "changed_by": r["changed_by"],
+                "parcel_id": r["parcel_id"],
+                "old_distance_m": r["old_distance_m"],
+                "old_duration_s": r["old_duration_s"],
+                "new_distance_m": r["new_distance_m"],
+                "new_duration_s": r["new_duration_s"],
+                "delta_distance_m": r["delta_distance_m"],
+                "delta_duration_s": r["delta_duration_s"],
+                "notes": r["notes"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+            for r in rows
+        ]
+    }
