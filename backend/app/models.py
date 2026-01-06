@@ -132,3 +132,41 @@ class RouteParcelMatch(Base):
             name="chk_route_parcel_match_status",
         ),
     )
+
+# NOWY MODEL - na końcu pliku!
+class Dispute(Base):
+    """Spory dotyczące dostaw."""
+    
+    __tablename__ = "disputes"
+
+    id = Column(BigInteger, primary_key=True)
+    parcel_id = Column(
+        BigInteger, 
+        ForeignKey("parcels.id", ondelete="CASCADE"), 
+        nullable=False
+    )
+    reported_by = Column(
+        BigInteger, 
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    courier_id = Column(
+        BigInteger, 
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    reason = Column(Text, nullable=False)
+    courier_response = Column(Text, nullable=True)
+    resolution = Column(Text, nullable=True)
+    status = Column(Text, nullable=False, server_default="open")
+    created_at = Column(
+        DateTime(timezone=True), 
+        nullable=False, 
+        server_default=func.now()
+    )
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open','resolved','escalated')",
+            name="chk_disputes_status",
+        ),
+    )    

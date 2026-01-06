@@ -1,3 +1,4 @@
+-- db\schema.sql
 -- PostGIS schema for closed transport matching MVP
 -- SRID: 4326 (WGS84, lon/lat)
 

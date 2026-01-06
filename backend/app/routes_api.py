@@ -37,6 +37,84 @@ def _geojson(value):
         return value
     return json.loads(value)
 
+@router.post("/{route_id}/mark-delivered")
+def mark_parcel_delivered(
+    route_id: int,
+    parcel_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Kurier oznacza paczkę jako dostarczoną.
+    Status: accepted → delivered
+    """
+    route = db.get(Route, route_id)
+    if not route or not route.is_active:
+        raise HTTPException(status_code=404, detail="Route not found")
+    
+    parcel = db.get(Parcel, parcel_id)
+    if not parcel:
+        raise HTTPException(status_code=404, detail="Parcel not found")
+    
+    if parcel.status != "accepted":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Can only mark accepted parcels. Current: {parcel.status}"
+        )
+    
+    # Sprawdź czy paczka należy do tej trasy
+    match = db.execute(
+        select(RouteParcelMatch)
+        .where(RouteParcelMatch.route_id == route_id)
+        .where(RouteParcelMatch.parcel_id == parcel_id)
+        .where(RouteParcelMatch.status == "accepted")
+    ).scalar_one_or_none()
+    
+    if not match:
+        raise HTTPException(
+            status_code=400, 
+            detail="Parcel not assigned to this route"
+        )
+    
+    parcel.status = "delivered"
+    db.commit()
+    
+    return {
+        "status": "delivered",
+        "parcel_id": parcel_id,
+        "route_id": route_id
+    }
+
+@router.post("/{route_id}/mark-all-delivered")
+def mark_all_delivered(route_id: int, db: Session = Depends(get_db)):
+    """
+    Kurier oznacza WSZYSTKIE paczki jako dostarczone.
+    """
+    route = db.get(Route, route_id)
+    if not route or not route.is_active:
+        raise HTTPException(status_code=404, detail="Route not found")
+    
+    # Znajdź wszystkie accepted paczki tej trasy
+    matches = db.execute(
+        select(RouteParcelMatch)
+        .where(RouteParcelMatch.route_id == route_id)
+        .where(RouteParcelMatch.status == "accepted")
+    ).scalars().all()
+    
+    updated_count = 0
+    for match in matches:
+        parcel = db.get(Parcel, match.parcel_id)
+        if parcel and parcel.status == "accepted":
+            parcel.status = "delivered"
+            updated_count += 1
+    
+    db.commit()
+    
+    return {
+        "status": "success",
+        "delivered_count": updated_count,
+        "route_id": route_id
+    }
+
 @router.post("", response_model=RouteOut)
 async def create_route(payload: RouteCreate, db: Session = Depends(get_db)):
     """

@@ -159,6 +159,18 @@ def cleanup_orphaned_parcels(db: Session = Depends(get_db)):
         "message": f"Przywrócono {restored_count} osieroconych paczek do pending"
     }
 
+@router.post("/auto-resolve-disputes")
+def trigger_auto_resolve_disputes(
+    days: int = 7,
+    db: Session = Depends(get_db)
+):
+    """
+    Ręczne wyzwolenie auto-resolve dla starych sporów.
+    W produkcji: cronjob.
+    """
+    from .tasks import auto_resolve_disputes
+    result = auto_resolve_disputes(db, days)
+    return result
 
 @router.get("/orphaned-parcels")
 def list_orphaned_parcels(db: Session = Depends(get_db)):

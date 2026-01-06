@@ -1,4 +1,4 @@
- # backend/app/parcels_api.py
+# backend/app/parcels_api.py
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -18,6 +18,90 @@ def _geojson(value):
     if isinstance(value, (dict, list)):
         return value
     return json.loads(value)
+
+@router.post("/{parcel_id}/confirm-delivery")
+def confirm_delivery(parcel_id: int, db: Session = Depends(get_db)):
+    """
+    Nadawca potwierdza odbiór paczki.
+    Status: delivered → completed
+    """
+    parcel = db.get(Parcel, parcel_id)
+    if not parcel:
+        raise HTTPException(status_code=404, detail="Parcel not found")
+    
+    if parcel.status != "delivered":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only confirm delivered parcels. Current: {parcel.status}"
+        )
+    
+    parcel.status = "completed"
+    db.commit()
+    
+    return {
+        "status": "completed",
+        "parcel_id": parcel_id,
+        "message": "Delivery confirmed"
+    }
+
+
+@router.post("/{parcel_id}/dispute-delivery")
+def dispute_delivery(
+    parcel_id: int,
+    reason: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Nadawca zgłasza problem z dostawą.
+    Status: delivered → disputed
+    """
+    parcel = db.get(Parcel, parcel_id)
+    if not parcel:
+        raise HTTPException(status_code=404, detail="Parcel not found")
+    
+    if parcel.status != "delivered":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only dispute delivered parcels. Current: {parcel.status}"
+        )
+    
+    # Zmień status
+    parcel.status = "disputed"
+    
+    # Znajdź kuriera
+    match = db.execute(
+        select(RouteParcelMatch)
+        .where(RouteParcelMatch.parcel_id == parcel_id)
+        .where(RouteParcelMatch.status == "accepted")
+    ).scalar_one_or_none()
+    
+    courier_id = None
+    if match:
+        route = db.get(Route, match.route_id)
+        if route:
+            courier_id = route.courier_id
+    
+    # Utwórz spór
+    from .models import Dispute
+    dispute = Dispute(
+        parcel_id=parcel_id,
+        reported_by=parcel.sender_id,
+        courier_id=courier_id,
+        reason=reason,
+        status="open"
+    )
+    
+    db.add(dispute)
+    db.commit()
+    db.refresh(dispute)
+    
+    return {
+        "status": "disputed",
+        "parcel_id": parcel_id,
+        "dispute_id": dispute.id,
+        "message": "Dispute created"
+    }
+
 @router.post("", response_model=ParcelOut)
 def create_parcel(payload: ParcelCreate, db: Session = Depends(get_db)):
     parcel = Parcel(
@@ -79,6 +163,9 @@ def get_parcel(parcel_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/{parcel_id}")
 def cancel_parcel(parcel_id: int, db: Session = Depends(get_db)):
+    """
+    Anuluje paczkę (zmienia status na 'cancelled').
+    """
     parcel = db.get(Parcel, parcel_id)
     if not parcel:
         raise HTTPException(status_code=404, detail="Parcel not found")
@@ -99,3 +186,32 @@ def cancel_parcel(parcel_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"status": "cancelled"}
+
+
+@router.delete("/{parcel_id}/permanent")
+def delete_parcel_permanently(parcel_id: int, db: Session = Depends(get_db)):
+    """
+    Fizyczne usunięcie paczki z bazy danych.
+    
+    TYLKO dla paczek ze statusem 'cancelled'.
+    Usuwa paczkę i wszystkie powiązane propozycje (cascade).
+    """
+    parcel = db.get(Parcel, parcel_id)
+    if not parcel:
+        raise HTTPException(status_code=404, detail="Parcel not found")
+    
+    if parcel.status != "cancelled":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Can only delete cancelled parcels. Current status: {parcel.status}"
+        )
+    
+    # Kasowanie (propozycje usuną się przez ON DELETE CASCADE)
+    db.delete(parcel)
+    db.commit()
+    
+    return {
+        "status": "deleted",
+        "parcel_id": parcel_id,
+        "message": "Parcel permanently deleted from database"
+    }

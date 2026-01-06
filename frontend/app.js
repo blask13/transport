@@ -1,4 +1,4 @@
-// frontend/app.js - WITH ROUTE WAYPOINT MARKERS
+// frontend/app.js - WITH ROUTE WAYPOINT MARKERS AND DELETE PARCEL
 
 const API_BASE = "http://localhost:8000";
 let ROUTE_ID = null;
@@ -186,11 +186,44 @@ async function loadMyParcels() {
     for (const p of data) {
       const div = document.createElement("div");
       div.className = "parcel";
+      
+      // NOWE: Przycisk usuwania dla paczek cancelled
+      let deleteButton = '';
+      if (p.status === 'cancelled') {
+        deleteButton = `<button class="btn-danger" onclick="deleteParcel(${p.id})" style="margin-top:6px;">🗑 Usuń</button>`;
+      }
+      
+      // NOWE: Przyciski dla delivered
+      let deliveryButtons = '';
+      if (p.status === 'delivered') {
+        deliveryButtons = `
+          <button class="btn-success" onclick="confirmDelivery(${p.id})" style="margin-top:6px;">
+            ✅ Potwierdź odbiór
+          </button>
+          <button class="btn-danger" onclick="disputeDelivery(${p.id})" style="margin-top:6px;">
+            ❌ Nie otrzymałem
+          </button>
+        `;
+      }
+      
+      // NOWE: Info dla disputed
+      let disputedInfo = '';
+      if (p.status === 'disputed') {
+        disputedInfo = `
+          <small style="color:#ff6600; display:block; margin-top:5px;">
+            ⚠️ Zgłoszono problem. Oczekiwanie na odpowiedź kuriera.
+          </small>
+        `;
+      }      
+      
       div.innerHTML = `
         <strong>Paczka #${p.id}</strong><br/>
         Status: <span class="status-${p.status}">${p.status}</span><br/>
+        ${disputedInfo}        
         <button onclick="showParcel(${p.id})">👁 Pokaż</button>
-        ${p.status !== 'accepted' ? `<button onclick="cancelParcel(${p.id})">❌ Anuluj</button>` : ''}
+        ${p.status !== 'accepted' && p.status !== 'cancelled' ? `<button onclick="cancelParcel(${p.id})">❌ Anuluj</button>` : ''}
+        ${deleteButton}
+        ${deliveryButtons}        
       `;
       container.appendChild(div);
     }
@@ -249,6 +282,26 @@ async function cancelParcel(parcelId) {
     parcelPreviewLayers = [];
     await loadMyParcels();
     showSuccess("Paczka anulowana");
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+// NOWE: Funkcja do fizycznego usuwania paczki
+async function deleteParcel(parcelId) {
+  if (!confirm("⚠️ UWAGA! Czy na pewno chcesz TRWALE USUNĄĆ tę paczkę z bazy danych?\n\nTej operacji nie można cofnąć!")) return;
+  try {
+    showLoading("Usuwanie paczki z bazy danych...");
+    const r = await fetch(`${API_BASE}/parcels/${parcelId}/permanent`, { method: "DELETE" });
+    if (!r.ok) {
+      const error = await r.json();
+      throw new Error(error.detail || "Nie można usunąć paczki");
+    }
+    const data = await r.json();
+    parcelPreviewLayers.forEach(l => map.removeLayer(l));
+    parcelPreviewLayers = [];
+    await loadMyParcels();
+    showSuccess(`Paczka #${parcelId} została trwale usunięta`);
   } catch (error) {
     showError(error.message);
   }
@@ -405,7 +458,21 @@ async function showRouteTimeline(routeId) {
     const routeRes = await fetch(`${API_BASE}/routes/${routeId}`);
     if (!routeRes.ok) throw new Error("Nie można pobrać trasy");
     const route = await routeRes.json();
+
+    // Pobierz paczki trasy
+    const matchesRes = await fetch(`${API_BASE}/routes/${routeId}/matches?status=accepted`);
+    const matchesData = await matchesRes.json();
     
+    // Pobierz status paczek
+    const parcelStatuses = {};
+    for (const match of matchesData.items || []) {
+      const parcelRes = await fetch(`${API_BASE}/parcels/${match.parcel_id}`);
+      if (parcelRes.ok) {
+        const parcel = await parcelRes.json();
+        parcelStatuses[match.parcel_id] = parcel.status;
+      }
+    }    
+
     // Wyczyść waypoints i segmenty
     clearWaypointMarkers();
     routeLayerGroup.clearLayers();
@@ -415,6 +482,7 @@ async function showRouteTimeline(routeId) {
       <h4>📋 Szczegóły trasy #${routeId}</h4>
       <button onclick="showMyRoutes()">⬅ Wróć do tras</button>
       <button onclick="selectRoute(${routeId})">👁 Pokaż tylko trasę</button>
+      <button class="btn-success" onclick="markAllDelivered(${routeId})">✅ Wszystkie dostarczono</button>      
       <hr style="margin:10px 0;"/>
     `;
     
@@ -423,9 +491,26 @@ async function showRouteTimeline(routeId) {
     
     const waypoints = segmentsData.waypoints;
     const segments = segmentsData.segments;
+    // Podziel waypoints na aktywne i dostarczone
+    const activeWaypoints = [];
+    const deliveredWaypoints = [];
     
-    // NARYSUJ KOLOROWE SEGMENTY PO DROGACH
-    for (let i = 0; i < segments.length; i++) {
+    for (let i = 0; i < waypoints.length; i++) {
+      const wp = waypoints[i];
+      const status = parcelStatuses[wp.parcel_id];
+      
+      if (status === 'delivered' || status === 'disputed' || status === 'completed') {
+        deliveredWaypoints.push({...wp, index: i, parcelStatus: status});
+      } else {
+        activeWaypoints.push({...wp, index: i, parcelStatus: status});
+      }
+    }
+
+    // NARYSUJ TYLKO AKTYWNE SEGMENTY
+    for (const wp of activeWaypoints) {
+      const i = wp.index;
+      if (i >= segments.length) continue;
+      
       const segment = segments[i];
       const segmentColor = getSegmentColor(i);
       
@@ -445,8 +530,11 @@ async function showRouteTimeline(routeId) {
       }
     }
     
-    // TIMELINE Z NUMERACJĄ
-    for (let i = 0; i < waypoints.length; i++) {
+    // TIMELINE - AKTYWNE PACZKI
+    timeline.innerHTML += '<h5 style="margin:15px 0 10px 0;">🚚 W trasie:</h5>';
+    
+    for (const wp of activeWaypoints) {
+      const i = wp.index;
       const wp = waypoints[i];
       const segmentColor = i < segments.length ? getSegmentColor(i) : '#999';
       
@@ -477,6 +565,16 @@ async function showRouteTimeline(routeId) {
       // Timeline entry
       const displayNumber = (wp.type === 'start' || wp.type === 'end') ? '' : `${i}. `;
       
+      let actionButtons = '';
+      if (wp.type === 'drop' && wp.parcelStatus === 'accepted') {
+        actionButtons = `
+          <button class="btn-success" style="margin-top:5px; font-size:11px;" 
+                  onclick="markDelivered(${routeId}, ${wp.parcel_id})">
+            ✅ Dostarczono
+          </button>
+        `;
+      }      
+
       timeline.innerHTML += `
         <div style="border-left:4px solid ${segmentColor}; padding-left:10px; margin-bottom:15px; cursor:pointer;"
              onclick="highlightWaypoint('${waypointId}')"
@@ -487,10 +585,57 @@ async function showRouteTimeline(routeId) {
           ${wp.type === 'drop' ? '<small>Dostawa przesyłki</small>' : ''}
           ${wp.type === 'start' ? '<small>Początek trasy</small>' : ''}
           ${wp.type === 'end' ? '<small>Koniec trasy</small>' : ''}
+          ${actionButtons}
         </div>
       `;
     }
     
+    // TIMELINE - DOSTARCZONE PACZKI
+    if (deliveredWaypoints.length > 0) {
+      timeline.innerHTML += '<hr style="margin:20px 0;"/>';
+      timeline.innerHTML += '<h5 style="margin:15px 0 10px 0;">📦 Dostarczone:</h5>';
+      
+      // Grupuj po paczkach
+      const deliveredParcels = {};
+      for (const wp of deliveredWaypoints) {
+        if (!deliveredParcels[wp.parcel_id]) {
+          deliveredParcels[wp.parcel_id] = {
+            id: wp.parcel_id,
+            status: wp.parcelStatus,
+            waypoints: []
+          };
+        }
+        deliveredParcels[wp.parcel_id].waypoints.push(wp);
+      }
+      
+      for (const [parcelId, data] of Object.entries(deliveredParcels)) {
+        let statusIcon = '';
+        let statusText = '';
+        
+        if (data.status === 'delivered') {
+          statusIcon = '✅';
+          statusText = 'Dostarczone (oczekuje na potwierdzenie)';
+        } else if (data.status === 'disputed') {
+          statusIcon = '⚠️';
+          statusText = 'SPÓR - zgłoszony problem';
+        } else if (data.status === 'completed') {
+          statusIcon = '✔️';
+          statusText = 'Potwierdzone';
+        }
+        
+        timeline.innerHTML += `
+          <div style="background:#f9f9f9; padding:10px; margin-bottom:10px; border-radius:5px;">
+            <strong>${statusIcon} Paczka #${parcelId}</strong><br/>
+            <small style="color:#666;">${statusText}</small><br/>
+            <button style="margin-top:5px; font-size:11px;" 
+                    onclick="showParcelDetails(${parcelId})">
+              👁 Pokaż szczegóły
+            </button>
+          </div>
+        `;
+      }
+    }   
+
     // Podsumowanie
     const totalSegments = segments.filter(s => !s.error).length;
     timeline.innerHTML += `
@@ -501,6 +646,8 @@ async function showRouteTimeline(routeId) {
         Całkowity czas: ${(route.duration_s / 60).toFixed(0)} min<br/>
         Liczba punktów: ${waypoints.length}<br/>
         Liczba segmentów: ${totalSegments}<br/>
+        W trasie: ${activeWaypoints.length}<br/>
+        Dostarczone: ${deliveredWaypoints.length}<br/>        
         <small style="color:#666;">💡 Kliknij na punkt aby zobaczyć go na mapie</small><br/>
         <small style="color:#666;">🎨 Każdy segment po drodze ma inny kolor</small>
       </div>
@@ -508,10 +655,11 @@ async function showRouteTimeline(routeId) {
     
     container.appendChild(timeline);
     
-    // Dopasuj mapę
-    const allPoints = waypoints.map(wp => [wp.coords[1], wp.coords[0]]);
+    // Dopasuj mapę TYLKO do aktywnych punktów
+    const allPoints = activeWaypoints.map(wp => [wp.coords[1], wp.coords[0]]);
+    if (allPoints.length > 0) {
     map.fitBounds(L.latLngBounds(allPoints));
-    
+    }    
     hideLoading();
   } catch (error) {
     showError(error.message);
@@ -705,6 +853,105 @@ async function acceptMatch(matchId) {
     await loadRoute();
     await loadMatches();
     showSuccess(`Zaakceptowano! Nowa trasa: ${(data.new_distance_m/1000).toFixed(1)} km (${data.total_parcels} paczek)`);
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+async function markDelivered(routeId, parcelId) {
+  if (!confirm("Oznaczasz tę paczkę jako dostarczoną?")) return;
+  
+  try {
+    showLoading("Oznaczanie jako dostarczona...");
+    const r = await fetch(
+      `${API_BASE}/routes/${routeId}/mark-delivered?parcel_id=${parcelId}`, 
+      { method: "POST" }
+    );
+    
+    if (!r.ok) {
+      const error = await r.json();
+      throw new Error(error.detail || "Błąd oznaczania");
+    }
+    
+    await showRouteTimeline(routeId);
+    showSuccess(`Paczka #${parcelId} oznaczona jako dostarczona`);
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+
+async function markAllDelivered(routeId) {
+  if (!confirm("Oznaczasz WSZYSTKIE paczki jako dostarczone?")) return;
+  
+  try {
+    showLoading("Oznaczanie wszystkich paczek...");
+    const r = await fetch(
+      `${API_BASE}/routes/${routeId}/mark-all-delivered`, 
+      { method: "POST" }
+    );
+    
+    if (!r.ok) throw new Error("Błąd oznaczania");
+    
+    const data = await r.json();
+    await showRouteTimeline(routeId);
+    showSuccess(`Oznaczono ${data.delivered_count} paczek jako dostarczone`);
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+
+async function showParcelDetails(parcelId) {
+  // Użyj istniejącej funkcji showParcel
+  await showParcel(parcelId);
+}
+
+async function confirmDelivery(parcelId) {
+  if (!confirm("Potwierdzasz odbiór paczki?")) return;
+  
+  try {
+    showLoading("Potwierdzanie odbioru...");
+    const r = await fetch(
+      `${API_BASE}/parcels/${parcelId}/confirm-delivery`, 
+      { method: "POST" }
+    );
+    
+    if (!r.ok) {
+      const error = await r.json();
+      throw new Error(error.detail || "Błąd potwierdzania");
+    }
+    
+    await loadMyParcels();
+    showSuccess("Odbiór potwierdzony!");
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+
+async function disputeDelivery(parcelId) {
+  const reason = prompt("Podaj powód problemu z dostawą:");
+  if (!reason) return;
+  
+  try {
+    showLoading("Zgłaszanie problemu...");
+    const r = await fetch(
+      `${API_BASE}/parcels/${parcelId}/dispute-delivery`, 
+      { 
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason })
+      }
+    );
+    
+    if (!r.ok) {
+      const error = await r.json();
+      throw new Error(error.detail || "Błąd zgłaszania");
+    }
+    
+    await loadMyParcels();
+    showSuccess("Problem zgłoszony. Kurier został powiadomiony.");
   } catch (error) {
     showError(error.message);
   }

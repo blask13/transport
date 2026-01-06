@@ -71,3 +71,38 @@ def cleanup_cancelled_parcel_matches(db: Session) -> dict:
     return {
         "cleaned_count": count
     }
+
+def auto_resolve_disputes(db: Session, days: int = 7) -> dict:
+    """
+    Automatycznie rozwiązuje spory starsze niż {days} dni.
+    Status: disputed → completed
+    """
+    from datetime import datetime, timedelta
+    from .models import Dispute, Parcel
+    
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    
+    # Znajdź stare spory
+    old_disputes = db.execute(
+        select(Dispute)
+        .where(Dispute.status == "open")
+        .where(Dispute.created_at < cutoff)
+    ).scalars().all()
+    
+    resolved_count = 0
+    for dispute in old_disputes:
+        parcel = db.get(Parcel, dispute.parcel_id)
+        if parcel and parcel.status == "disputed":
+            # Auto-resolve jako completed
+            parcel.status = "completed"
+            dispute.status = "resolved"
+            dispute.resolved_at = datetime.utcnow()
+            dispute.resolution = f"Auto-resolved after {days} days (no response from courier)"
+            resolved_count += 1
+    
+    db.commit()
+    
+    return {
+        "resolved_count": resolved_count,
+        "cutoff_date": cutoff.isoformat()
+    }
