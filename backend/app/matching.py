@@ -1,4 +1,4 @@
-# backend/app/matching.py - WITH WAYPOINT OPTIMIZATION
+# backend/app/matching.py - WITH SEQUENTIAL OPTIMIZATION
 from __future__ import annotations
 
 from sqlalchemy.orm import Session
@@ -6,7 +6,7 @@ from sqlalchemy import text, select
 from .osrm import osrm_route
 from .models import RouteParcelMatch, Parcel, Route
 from .history import log_route_change
-from .waypoint_optimizer import optimize_waypoints  # NOWE!
+from .waypoint_optimizer import optimize_waypoints_greedy_forward  # ZMIANA!
 import json
 from geoalchemy2.elements import WKTElement
 
@@ -17,7 +17,10 @@ def propose_matches_for_route(
     buffer_m: float = 50000.0,
 ):
     """
-    Propozycje z OPTYMALIZACJĄ kolejności waypoints.
+    Propozycje z SEKWENCYJNĄ optymalizacją.
+    
+    Nowa paczka jest wstawiana w najlepsze miejsce w istniejącej trasie,
+    BEZ zmiany kolejności już zaakceptowanych paczek.
     """
 
     route = db.get(Route, route_id)
@@ -91,11 +94,11 @@ def propose_matches_for_route(
                 "drop": (pcoords["drop_lng"], pcoords["drop_lat"]),
             })
 
-    # OPTYMALNA trasa bazowa (z już zaakceptowanymi paczkami)
+    # Trasa bazowa (z już zaakceptowanymi paczkami)
     start = (coords["start_lng"], coords["start_lat"])
     end = (coords["end_lng"], coords["end_lat"])
     
-    base_waypoints = optimize_waypoints(start, end, accepted_parcels_data)
+    base_waypoints = optimize_waypoints_greedy_forward(start, end, accepted_parcels_data)
     base = osrm_route(base_waypoints)
 
     results = []
@@ -119,16 +122,16 @@ def propose_matches_for_route(
         if not pcoords:
             continue
 
-        # NOWA paczka do dodania
+        # NOWA paczka do dodania (NA KOŃCU listy!)
         new_parcel_data = {
             "id": parcel.id,
             "pickup": (pcoords["pickup_lng"], pcoords["pickup_lat"]),
             "drop": (pcoords["drop_lng"], pcoords["drop_lat"]),
         }
 
-        # OPTYMALNA trasa z nową paczką
+        # Trasa z nową paczką (dodana NA KOŃCU sekwencji)
         variant_parcels = accepted_parcels_data + [new_parcel_data]
-        variant_waypoints = optimize_waypoints(start, end, variant_parcels)
+        variant_waypoints = optimize_waypoints_greedy_forward(start, end, variant_parcels)
         variant = osrm_route(variant_waypoints)
 
         delta_distance = variant["distance_m"] - base["distance_m"]
@@ -150,7 +153,7 @@ def propose_matches_for_route(
                 "base": base,
                 "variant": variant,
                 "accepted_parcels_count": len(accepted_parcels_data),
-                "optimized": True,
+                "optimizer": "greedy_forward",
             }),
             status="proposed",
         )
@@ -173,7 +176,10 @@ def propose_matches_for_route(
 
 def accept_match(match_id: int, db: Session, changed_by: str = "system"):
     """
-    Accept z OPTYMALIZACJĄ waypoints.
+    Accept z SEKWENCYJNĄ optymalizacją.
+    
+    Nowa paczka dodawana NA KOŃCU sekwencji, bez zmiany kolejności
+    wcześniej zaakceptowanych paczek.
     """
 
     with db.begin():
@@ -230,16 +236,17 @@ def accept_match(match_id: int, db: Session, changed_by: str = "system"):
         if not route_coords:
             raise ValueError("route_coords_not_found")
 
-        # Pobierz WSZYSTKIE zaakceptowane paczki
-        accepted_parcels_ids = db.execute(
-            select(RouteParcelMatch.parcel_id)
+        # Pobierz zaakceptowane paczki (w kolejności akceptacji)
+        accepted_matches = db.execute(
+            select(RouteParcelMatch)
             .where(RouteParcelMatch.route_id == route.id)
             .where(RouteParcelMatch.status == "accepted")
+            .order_by(RouteParcelMatch.id)  # Kolejność akceptacji!
         ).scalars().all()
 
-        # Przygotuj dane paczek
+        # Przygotuj dane paczek (w kolejności akceptacji)
         parcels_data = []
-        for pid in accepted_parcels_ids:
+        for m in accepted_matches:
             pcoords = db.execute(
                 text("""
                     SELECT
@@ -247,16 +254,16 @@ def accept_match(match_id: int, db: Session, changed_by: str = "system"):
                       ST_X(drop_point) AS drop_lng, ST_Y(drop_point) AS drop_lat
                     FROM parcels WHERE id = :pid
                 """),
-                {"pid": pid}
+                {"pid": m.parcel_id}
             ).mappings().first()
             if pcoords:
                 parcels_data.append({
-                    "id": pid,
+                    "id": m.parcel_id,
                     "pickup": (pcoords["pickup_lng"], pcoords["pickup_lat"]),
                     "drop": (pcoords["drop_lng"], pcoords["drop_lat"]),
                 })
         
-        # Dodaj NOWĄ paczkę
+        # Dodaj NOWĄ paczkę NA KOŃCU
         new_parcel_coords = db.execute(
             text("""
                 SELECT
@@ -276,11 +283,11 @@ def accept_match(match_id: int, db: Session, changed_by: str = "system"):
             "drop": (new_parcel_coords["drop_lng"], new_parcel_coords["drop_lat"]),
         })
 
-        # OPTYMALIZACJA WAYPOINTS!
+        # SEKWENCYJNA optymalizacja
         start = (route_coords["start_lng"], route_coords["start_lat"])
         end = (route_coords["end_lng"], route_coords["end_lat"])
         
-        optimized_waypoints = optimize_waypoints(start, end, parcels_data)
+        optimized_waypoints = optimize_waypoints_greedy_forward(start, end, parcels_data)
         
         # OSRM z optymalną kolejnością
         variant = osrm_route(optimized_waypoints, with_geometry=True)
@@ -313,7 +320,7 @@ def accept_match(match_id: int, db: Session, changed_by: str = "system"):
             parcel_id=parcel.id,
             old_snapshot=old_snapshot,
             new_snapshot=new_snapshot,
-            notes=f"Match #{match.id} accepted. Total parcels: {len(parcels_data)} (optimized waypoints)",
+            notes=f"Match #{match.id} accepted. Total parcels: {len(parcels_data)} (sequential)",
         )
 
         match.status = "accepted"
@@ -330,5 +337,5 @@ def accept_match(match_id: int, db: Session, changed_by: str = "system"):
             "new_distance_m": float(route.distance_m),
             "new_duration_s": float(route.duration_s),
             "total_parcels": len(parcels_data),
-            "optimized": True,
+            "optimizer": "sequential",
         }
