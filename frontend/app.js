@@ -1,4 +1,4 @@
-// frontend/app.js - IMPROVED UX VERSION
+// frontend/app.js - PARCELS WITH CONNECTING LINES
 
 const API_BASE = "http://localhost:8000";
 let ROUTE_ID = null;
@@ -15,12 +15,13 @@ let drawLine = null;
 let routeLayer;
 let pickupLayers = [];
 let dropLayers = [];
+let parcelLines = [];  // NOWE: linie łączące pickup→drop
 let parcelPreviewLayers = [];
 let startMarker = null;
 let endMarker = null;
 let isLoading = false;
 
-// NOWE: Legenda
+// Legenda
 const legend = L.control({ position: 'bottomright' });
 legend.onAdd = function() {
   const div = L.DomUtil.create('div', 'legend');
@@ -31,10 +32,11 @@ legend.onAdd = function() {
   div.style.fontSize = '12px';
   div.innerHTML = `
     <strong>Legenda:</strong><br/>
-    <span style="color:blue;">🔵 Początek trasy (START)</span><br/>
-    <span style="color:red;">🔴 Koniec trasy (END)</span><br/>
-    <span style="color:green;">🟢 Odbiór paczki (PICKUP)</span><br/>
-    <span style="color:darkred;">🔴 Dostawa paczki (DROP)</span>
+    <span style="color:blue;">🔵 START trasy</span><br/>
+    <span style="color:red;">🔴 END trasy</span><br/>
+    <span style="color:green;">🟢 PICKUP (odbiór)</span><br/>
+    <span style="color:darkred;">🔴 DROP (dostawa)</span><br/>
+    <span style="color:orange;">━━ Paczka (pickup→drop)</span>
   `;
   return div;
 };
@@ -103,8 +105,10 @@ function updateDrawLine() {
 function clearMatchLayers() {
   pickupLayers.forEach(l => map.removeLayer(l));
   dropLayers.forEach(l => map.removeLayer(l));
+  parcelLines.forEach(l => map.removeLayer(l));  // NOWE: usuń linie
   pickupLayers = [];
   dropLayers = [];
+  parcelLines = [];
 }
 
 function clearStartEndMarkers() {
@@ -149,18 +153,33 @@ async function showParcel(parcelId) {
     const r = await fetch(`${API_BASE}/parcels/${parcelId}`);
     if (!r.ok) throw new Error("Nie można pobrać paczki");
     const p = await r.json();
+    
     parcelPreviewLayers.forEach(l => map.removeLayer(l));
     parcelPreviewLayers = [];
+    
+    // NOWE: Pobierz współrzędne
+    const pickupCoords = p.pickup_point.coordinates;
+    const dropCoords = p.drop_point.coordinates;
+    
+    // Linia łącząca pickup → drop
+    const line = L.polyline(
+      [[pickupCoords[1], pickupCoords[0]], [dropCoords[1], dropCoords[0]]],
+      { color: "orange", weight: 3, dashArray: "5,5" }
+    ).addTo(map);
+    parcelPreviewLayers.push(line);
+    
     const pickup = L.geoJSON(p.pickup_point, {
       pointToLayer: (_, latlng) =>
-        L.circleMarker(latlng, { color: "green", radius: 8 })
-          .bindPopup("🟢 PICKUP (odbiór)")
+        L.circleMarker(latlng, { color: "green", radius: 8, fillOpacity: 0.8 })
+          .bindPopup(`🟢 PICKUP (odbiór)<br/>Paczka #${parcelId}`)
     }).addTo(map);
+    
     const drop = L.geoJSON(p.drop_point, {
       pointToLayer: (_, latlng) =>
-        L.circleMarker(latlng, { color: "darkred", radius: 8 })
-          .bindPopup("🔴 DROP (dostawa)")
+        L.circleMarker(latlng, { color: "darkred", radius: 8, fillOpacity: 0.8 })
+          .bindPopup(`🔴 DROP (dostawa)<br/>Paczka #${parcelId}`)
     }).addTo(map);
+    
     parcelPreviewLayers.push(pickup, drop);
     map.fitBounds(L.featureGroup(parcelPreviewLayers).getBounds());
     showSuccess(`Wyświetlono paczkę #${parcelId}`);
@@ -276,7 +295,6 @@ async function showMyRoutes() {
       return;
     }
     for (const route of routes) {
-      // NOWE: Pobierz paczki dla tej trasy
       const matchesRes = await fetch(`${API_BASE}/routes/${route.id}/matches?status=accepted`);
       let parcelsInfo = "";
       if (matchesRes.ok) {
@@ -377,7 +395,6 @@ async function loadRoute() {
       style: { color: "blue", weight: 4 }
     }).addTo(map);
 
-    // NOWE: Dodaj markery START i END
     const startCoords = data.start_point.coordinates;
     const endCoords = data.end_point.coordinates;
     
@@ -427,16 +444,32 @@ async function loadMatches() {
     }
 
     for (const m of data.items) {
+      // NOWE: Pobierz współrzędne pickup i drop
+      const pickupCoords = m.pickup_point.coordinates;
+      const dropCoords = m.drop_point.coordinates;
+      
+      // NOWE: Linia łącząca pickup → drop
+      const line = L.polyline(
+        [[pickupCoords[1], pickupCoords[0]], [dropCoords[1], dropCoords[0]]],
+        { 
+          color: "orange", 
+          weight: 2, 
+          dashArray: "5,5",
+          opacity: 0.7
+        }
+      ).bindPopup(`Paczka #${m.parcel_id}`).addTo(map);
+      parcelLines.push(line);
+      
       const pickup = L.geoJSON(m.pickup_point, {
         pointToLayer: (_, latlng) =>
-          L.circleMarker(latlng, { color: "green", radius: 7 })
-            .bindPopup("🟢 PICKUP (odbiór)")
+          L.circleMarker(latlng, { color: "green", radius: 7, fillOpacity: 0.8 })
+            .bindPopup(`🟢 PICKUP<br/>Paczka #${m.parcel_id}`)
       }).addTo(map);
 
       const drop = L.geoJSON(m.drop_point, {
         pointToLayer: (_, latlng) =>
-          L.circleMarker(latlng, { color: "darkred", radius: 7 })
-            .bindPopup("🔴 DROP (dostawa)")
+          L.circleMarker(latlng, { color: "darkred", radius: 7, fillOpacity: 0.8 })
+            .bindPopup(`🔴 DROP<br/>Paczka #${m.parcel_id}`)
       }).addTo(map);
 
       pickupLayers.push(pickup);
