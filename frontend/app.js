@@ -116,10 +116,30 @@ function showError(message) {
 
 map.on("click", (e) => {
   if (mode === "idle") return;
+  
+  // NOWE: Limit 2 punktów dla paczki
+  if (mode === "draw_parcel" && drawMarkers.length >= 2) {
+    showError("Paczka może mieć tylko 2 punkty: PICKUP i DROP");
+    return;
+  }
+    
   const marker = L.marker(e.latlng, { draggable: true }).addTo(map);
   marker.on("drag", () => updateDrawLine());
   drawMarkers.push(marker);
   updateDrawLine();
+  
+  // NOWE: Auto-hint po dodaniu punktów
+  if (mode === "draw_parcel") {
+    if (drawMarkers.length === 1) {
+      document.getElementById("parcel-hint").innerText = "2. Kliknij DROP";
+      document.getElementById("parcel-hint").style.color = "#4CAF50";
+    } else if (drawMarkers.length === 2) {
+      document.getElementById("parcel-hint").innerText = "✅ Kliknij 'Zatwierdź paczkę'";
+      document.getElementById("parcel-hint").style.color = "#2196F3";
+      document.getElementById("parcel-hint").style.fontWeight = "bold";
+    }
+  }
+
 });
 
 function updateDrawLine() {
@@ -316,20 +336,33 @@ function resetDraw() {
   }
   mode = "idle";
   setHint("");
-  // NOWE: Resetuj ROUTE_ID żeby można było dodać nową trasę
-  // (ale tylko jeśli nie jesteśmy w trybie przeglądania trasy)
+  document.getElementById("route-draw-controls").style.display = "none";
+  document.getElementById("parcel-draw-controls").style.display = "none";
 }
 
 function startRouteMode() {
   resetDraw();
   mode = "draw_route";
+  document.getElementById("route-draw-controls").style.display = "block";
+  document.getElementById("parcel-draw-controls").style.display = "none";  
   setHint("Tryb TRASY: klikaj kolejne punkty. Minimum 2. Zatwierdź ✅", "info", 0);
 }
 
 function startParcelMode() {
   resetDraw();
   mode = "draw_parcel";
+  document.getElementById("route-draw-controls").style.display = "none";
+  document.getElementById("parcel-draw-controls").style.display = "block";
+  document.getElementById("parcel-hint").innerText = "1. Kliknij PICKUP";  
   setHint("Tryb PACZKI: 1. klik = PICKUP, 2. klik = DROP. Zatwierdź ✅", "info", 0);
+}
+
+function confirmRouteAndSave() {
+  confirmDraw();
+}
+
+function confirmParcelAndSave() {
+  confirmDraw();
 }
 
 async function confirmDraw() {
@@ -346,7 +379,6 @@ async function confirmDraw() {
     if (mode === "draw_parcel") {
       await createParcelFromPolyline(points[0], points[points.length - 1]);
     }
-    resetDraw();
   } catch (error) {
     showError(error.message);
   }
@@ -382,6 +414,10 @@ async function createRouteFromPolyline(points) {
       throw new Error(error.detail || "Błąd tworzenia trasy");
     }
     const data = await r.json();
+
+    // Wyczyść mapę i resetuj tryb
+    resetDraw();
+
     ROUTE_ID = data.id;
     await loadRoute();
     showSuccess(`Trasa #${ROUTE_ID} utworzona (${(data.distance_m/1000).toFixed(1)} km)`);
@@ -390,7 +426,6 @@ async function createRouteFromPolyline(points) {
     }, 2000);
   } catch (error) {
     showError(error.message);
-    throw error;
   }
 }
 
@@ -731,16 +766,27 @@ async function createParcelFromPolyline(pickup, drop) {
       throw new Error(error.detail || "Nie udało się dodać paczki");
     }
     const data = await r.json();
+    
+    // POPRAWKA: Wyczyść mapę i resetuj tryb
+    resetDraw();
+    mode = "idle";
+        
     await loadMyParcels();
     showSuccess(`Utworzono paczkę #${data.id}`);
   } catch (error) {
     showError(error.message);
-    throw error;
   }
 }
 
 async function loadRoute() {
   if (!ROUTE_ID) return;
+  
+  // POPRAWKA: Walidacja dla paczki
+  if (mode === "draw_parcel" && drawMarkers.length !== 2) {
+    showError("Paczka musi mieć dokładnie 2 punkty: PICKUP i DROP");
+    return;
+  }
+  
   try {
     routeLayerGroup.clearLayers();
     clearStartEndMarkers();

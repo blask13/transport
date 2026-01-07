@@ -331,27 +331,35 @@
       <div id="hint"></div>
       
       <div class="section">
-        <h3>🎨 Rysowanie</h3>
+        <h3>📍 Moje trasy</h3>
         <div class="button-group">
-          <button onclick="startRouteMode()">🗺️ Rysuj trasę</button>
-          <button onclick="startParcelMode()">📦 Rysuj paczkę</button>
-          <button class="btn-success" onclick="confirmDraw()">✅ Zatwierdź</button>
+        <button onclick="startRouteMode()">🗺️ Rysuj nową trasę</button>
+        <div id="route-draw-controls" style="display:none;">
+          <small style="color:#666; display:block; margin:5px 0;">Klikaj punkty na mapie</small>
+          <button class="btn-success" onclick="confirmRouteAndSave()">✅ Zatwierdź trasę</button>
           <button class="btn-danger" onclick="cancelDraw()">❌ Anuluj</button>
-        </div>
-      </div>
-
-      <hr/>
-      
-      <div class="section">
-        <h3>📍 Zarządzanie</h3>
-        <div class="button-group">
+        </div>          
           <button onclick="showMyRoutes()">📍 Moje trasy</button>
-          <button onclick="loadMyParcels()">📦 Moje paczki</button>
           <button class="btn-primary" onclick="propose()">🔍 Szukaj propozycji</button>
         </div>
       </div>
     </div>
     
+    <hr/>
+    
+    <div class="section">
+      <h3>📦 Moje paczki</h3>
+      <div class="button-group">
+        <button onclick="startParcelMode()">📦 Dodaj paczkę</button>
+        <div id="parcel-draw-controls" style="display:none;">
+          <small id="parcel-hint" style="color:#666; display:block; margin:5px 0;">1. PICKUP</small>
+          <button class="btn-success" onclick="confirmParcelAndSave()">✅ Zatwierdź paczkę</button>
+          <button class="btn-danger" onclick="cancelDraw()">❌ Anuluj</button>
+        </div>
+        <button onclick="loadMyParcels()">📦 Moje paczki</button>
+      </div>
+    </div>   
+
     <!-- Prawa kolumna - wyniki -->
     <div id="results">
       <div class="section">
