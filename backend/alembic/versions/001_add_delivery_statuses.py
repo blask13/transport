@@ -1,28 +1,27 @@
 """add delivery statuses and disputes
 
-Revision ID: ce106afb6bd8
-Revises: eaf94ce58605
-Create Date: 2026-01-06 19:54:57.850797
-
+Revises: a1b2c3d4e5f6
+Revises: 
+Create Date: 2026-01-07 14:00:00
 """
-from typing import Sequence, Union
-
 from alembic import op
 import sqlalchemy as sa
 
-
-# revision identifiers, used by Alembic.
-revision: str = 'ce106afb6bd8'
-down_revision: Union[str, Sequence[str], None] = 'eaf94ce58605'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
-
+revision = '001'
+down_revision = 'a1b2c3d4e5f6' 
+branch_labels = None
+depends_on = None
 
 def upgrade() -> None:
     # Rozszerz statusy paczek
     op.execute("""
         ALTER TABLE parcels 
         DROP CONSTRAINT IF EXISTS chk_parcels_status
+    """)
+    
+    op.execute("""
+        ALTER TABLE parcels 
+        DROP CONSTRAINT IF EXISTS parcels_status_check
     """)
     
     op.execute("""
@@ -66,7 +65,6 @@ def upgrade() -> None:
         CREATE INDEX IF NOT EXISTS idx_disputes_status 
         ON disputes(status) WHERE status = 'open'
     """)
-
 
 def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS disputes")

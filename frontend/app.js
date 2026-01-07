@@ -473,8 +473,9 @@ async function showRouteTimeline(routeId) {
       }
     }    
 
-    // Wyczyść waypoints i segmenty
+    // Wyczyść WSZYSTKO z mapy przed rysowaniem
     clearWaypointMarkers();
+    clearMatchLayers(); 
     routeLayerGroup.clearLayers();
     
     const container = document.getElementById("matches");
@@ -507,11 +508,30 @@ async function showRouteTimeline(routeId) {
     }
 
     // NARYSUJ TYLKO AKTYWNE SEGMENTY
-    for (const wp of activeWaypoints) {
-      const i = wp.index;
-      if (i >= segments.length) continue;
+    // Znajdź zakresy aktywnych punktów
+    const activeIndices = new Set();
+    for (let i = 0; i < waypoints.length; i++) {
+      const wp = waypoints[i];
+      const status = parcelStatuses[wp.parcel_id];
+      
+      // Dodaj punkt jeśli NIE jest delivered/disputed/completed
+      if (status !== 'delivered' && status !== 'disputed' && status !== 'completed') {
+        activeIndices.add(i);
+      }
+    }
+    
+    // Rysuj segmenty między aktywnymi punktami
+    for (let i = 0; i < segments.length; i++) {
       
       const segment = segments[i];
+      
+      // Sprawdź czy oba końce segmentu są aktywne
+      const fromActive = activeIndices.has(segment.from_index);
+      const toActive = activeIndices.has(segment.to_index);
+      
+      // Rysuj segment tylko jeśli OBA końce są aktywne
+      if (!fromActive || !toActive) continue;
+
       const segmentColor = getSegmentColor(i);
       
       if (segment.geometry && segment.geometry.type === "LineString") {
@@ -533,9 +553,16 @@ async function showRouteTimeline(routeId) {
     // TIMELINE - AKTYWNE PACZKI
     timeline.innerHTML += '<h5 style="margin:15px 0 10px 0;">🚚 W trasie:</h5>';
     
-    for (const wp of activeWaypoints) {
-      const i = wp.index;
-      const wp = waypoints[i];
+    // TYLKO start/end + aktywne paczki
+    for (let idx = 0; idx < waypoints.length; idx++) {
+      const wp = waypoints[idx];
+      const status = parcelStatuses[wp.parcel_id];
+      
+      // Pomiń delivered/disputed/completed
+      if (status === 'delivered' || status === 'disputed' || status === 'completed') {
+        continue;
+      }
+      const i = idx;
       const segmentColor = i < segments.length ? getSegmentColor(i) : '#999';
       
       let icon = '📍';
@@ -566,7 +593,7 @@ async function showRouteTimeline(routeId) {
       const displayNumber = (wp.type === 'start' || wp.type === 'end') ? '' : `${i}. `;
       
       let actionButtons = '';
-      if (wp.type === 'drop' && wp.parcelStatus === 'accepted') {
+      if (wp.type === 'drop' && status === 'accepted') {
         actionButtons = `
           <button class="btn-success" style="margin-top:5px; font-size:11px;" 
                   onclick="markDelivered(${routeId}, ${wp.parcel_id})">
