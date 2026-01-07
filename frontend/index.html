@@ -44,8 +44,8 @@
     
     /* NOWE: Separator do przesuwania */
     #separator {
-      height: 6px;
-      background: #2196F3;
+      height: 4px;
+      background: #e0e0e0;
       cursor: row-resize;
       position: relative;
       z-index: 1000;
@@ -53,7 +53,8 @@
     }
     
     #separator:hover {
-      background: #1976D2;
+      height: 6px;
+      background: #2196F3;
     }
     
     #separator::after {
@@ -62,9 +63,16 @@
       left: 50%;
       top: 50%;
       transform: translate(-50%, -50%);
-      color: white;
+      color: #999;
       font-size: 12px;
       letter-spacing: 2px;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    
+    #separator:hover::after {
+      opacity: 1;
+      color: white;      
     }
     
     /* ZMIANA: Panel z dynamiczną wysokością */
